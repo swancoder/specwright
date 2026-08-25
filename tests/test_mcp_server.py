@@ -13,7 +13,6 @@ from mcp.server import Server
 from knowledge_graph.indexer import DatabaseManager
 from mcp_server.core.context import HarnessContext
 from mcp_server.main import build_registry, build_server, parse_args
-from mcp_server.tools import NOT_IMPLEMENTED
 
 EXPECTED_TOOLS = {
     "read_constitution",
@@ -72,14 +71,14 @@ def test_query_temporal_coupling_default_threshold(ctx: HarnessContext) -> None:
     assert ctx.db.calls == [("x.py", 0.3)]  # type: ignore[attr-defined]
 
 
-def test_stub_tools_return_not_implemented(ctx: HarnessContext) -> None:
+def test_sandboxed_tools_report_errors_via_registry(ctx: HarnessContext) -> None:
     registry = build_registry(ctx)
-    assert registry.call("read_constitution", {}) == NOT_IMPLEMENTED
-    assert registry.call("read_specification", {"spec_id": "001"}) == NOT_IMPLEMENTED
-    assert registry.call("fs_read", {"filepath": "a"}) == NOT_IMPLEMENTED
-    assert registry.call("fs_apply_patch", {"filepath": "a", "search_string": "x", "replace_string": "y"}) == NOT_IMPLEMENTED
-    assert registry.call("run_tests", {"test_target": "tests/"}) == NOT_IMPLEMENTED
-    assert registry.call("git_commit_feature", {"message": "m", "spec_id": "s"}) == NOT_IMPLEMENTED
+    res = registry.call_tool_result("fs_read", {"filepath": "../etc/passwd"})
+    assert res.is_error and "fs_read failed" in res.content[0].text  # type: ignore[union-attr]
+    (ctx.target_dir / "hello.txt").write_text("hi\n")
+    assert registry.call("fs_read", {"filepath": "hello.txt"}) == "hi\n"
+    res = registry.call_tool_result("read_constitution", {})
+    assert res.is_error  # no constitution in an empty target
 
 
 def test_invalid_arguments_are_reported_not_raised(ctx: HarnessContext) -> None:

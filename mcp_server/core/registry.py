@@ -42,6 +42,10 @@ class ToolSpec:
         )
 
 
+class ToolError(RuntimeError):
+    """Base class for failures a tool reports to the LLM (rendered as ``is_error``)."""
+
+
 class ToolNotFoundError(KeyError):
     """Raised when a tool name is not registered."""
 
@@ -79,6 +83,7 @@ class ToolRegistry:
         Raises:
             ToolNotFoundError: unknown tool name.
             pydantic.ValidationError: arguments do not satisfy the model.
+            ToolError: the tool itself refused or failed.
         """
         spec = self.get(name)
         args = spec.args_model.model_validate(arguments or {})
@@ -93,4 +98,6 @@ class ToolRegistry:
             text, is_error = f"Unknown tool: {name}", True
         except ValidationError as exc:
             text, is_error = f"Invalid arguments for {name}: {exc}", True
+        except ToolError as exc:
+            text, is_error = f"{name} failed: {exc}", True
         return types.CallToolResult(content=[types.TextContent(type="text", text=text)], is_error=is_error)

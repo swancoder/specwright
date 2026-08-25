@@ -19,10 +19,11 @@ _TODO: orchestrator / agent loop (`bin/run_agent.sh`)._
 
 | Stage | Title | Status | ADR |
 |---|---|---|---|
-| 1 | Untrack Internal Engineering Notes | not started | [ADR-001](adr/ADR-001-untrack-internal-engineering-notes.md) |
+| 1 | Sandboxing & Target Isolation (incl. local-only internal notes) | done (written in Stage 5) | [ADR-001](adr/ADR-001-sandboxing-and-target-isolation.md) |
 | 2 | Knowledge Graph SQLite Schema & .graphignore | storage + filter done; git parsing deferred to Stage 3 | [ADR-002](adr/ADR-002-knowledge-graph-sqlite-schema.md) |
 | 3 | Incremental Indexer & Jaccard Metric Logic | done (tests: `tests/test_indexer_git.py`) | [ADR-003](adr/ADR-003-incremental-indexer-jaccard-metric.md) |
 | 4 | MCP Server & Core Tool Stubs | done — stdio server, 7 tools registered, `query_temporal_coupling` wired (tests: `tests/test_mcp_server.py`) | [ADR-004](adr/ADR-004-mcp-server-initialization.md) |
+| 5 | Sandboxed Tool Implementations | done — all 7 tools functional behind `Sandbox` (tests: `tests/test_tools_sandbox.py`) | [ADR-001](adr/ADR-001-sandboxing-and-target-isolation.md) |
 
 ## 3. Component Specifications
 ### 3.1 `bin/` — lifecycle scripts
@@ -30,8 +31,9 @@ _TODO: orchestrator / agent loop (`bin/run_agent.sh`)._
 - `bootstrap_env.sh`, `run_agent.sh` — TODO.
 ### 3.2 `mcp_server/` — MCP boundary
 - `core/registry.py` — `ToolArgs` (strict Pydantic base, `extra="forbid"`), `ToolSpec`, `ToolRegistry` (`list_tools()`, `call()`, `call_tool_result()`); transport-independent.
-- `core/context.py` — `HarnessContext(target_dir, db)`; DB defaults to `<target>/.agent-harness/graph.db`.
-- `tools/*.py` — each exposes `build_tools(ctx)`; `graph_tools.query_temporal_coupling` is wired to `DatabaseManager.query_coupled_files`, the other six return `"Not implemented yet"`.
+- `core/context.py` — `HarnessContext(target_dir, db, sandbox)`; DB defaults to `<target>/.agent-harness/graph.db`.
+- `core/sandbox.py` — `Sandbox.resolve()` (rejects absolute, `..`, symlink escapes) and `Sandbox.run()` (no shell, cwd=target, scrubbed env, timeout); `SandboxViolation`/`ToolError` surface as `is_error` results (ADR-001).
+- `tools/*.py` — each exposes `build_tools(ctx)`; every tool goes through `ctx.sandbox`. See §5 for behaviour.
 - `main.py` — `build_registry`, `build_server` (`mcp.server.Server` with `on_list_tools`/`on_call_tool`), `serve` over `stdio_server()`, CLI `--target-dir` (required) `--db`.
 - Launch: `./bin/start_mcp.sh --target-dir <repo>` or `python3 -m mcp_server.main --target-dir <repo>`.
 ### 3.3 `knowledge_graph/` — indexer and temporal coupling
@@ -56,16 +58,20 @@ Argument schemas are the Pydantic `*Args` models in each module (strict; unknown
 
 | Tool | Arguments | Behaviour | Module |
 |---|---|---|---|
-| `read_constitution` | — | stub | `mcp_server/tools/fs_tools.py` |
-| `read_specification` | `spec_id: str` | stub | `mcp_server/tools/fs_tools.py` |
-| `fs_read` | `filepath: str` | stub | `mcp_server/tools/fs_tools.py` |
-| `fs_apply_patch` | `filepath, search_string, replace_string: str` | stub | `mcp_server/tools/fs_tools.py` |
-| `run_tests` | `test_target: str` | stub | `mcp_server/tools/test_tools.py` |
-| `git_commit_feature` | `message, spec_id: str` | stub | `mcp_server/tools/git_tools.py` |
+| `read_constitution` | — | reads `.github/constitution.md` | `mcp_server/tools/fs_tools.py` |
+| `read_specification` | `spec_id: str` | concatenates `*.md` under `specs/<id>*/` (or `specs/<id>.md`); ambiguous prefix → error | `mcp_server/tools/fs_tools.py` |
+| `fs_read` | `filepath: str` | UTF-8 text ≤ 512 KiB inside target | `mcp_server/tools/fs_tools.py` |
+| `fs_apply_patch` | `filepath, search_string, replace_string: str` | replaces exactly one occurrence (0 or >1 → error, file untouched); atomic write | `mcp_server/tools/fs_tools.py` |
+| `run_tests` | `test_target: str` (`path[::selector]`) | runner auto-detect gradlew → npm → pytest; 600 s timeout; JSON `{runner, exit_code, timed_out, stdout, stderr}` | `mcp_server/tools/test_tools.py` |
+| `git_commit_feature` | `message, spec_id: str` | validates Conventional Commits, header `… [spec_id]`, stages `-A` excluding `CLAUDE.md`, `prompts-hist/`, `.agent-harness/`; no co-author trailers | `mcp_server/tools/git_tools.py` |
 | `query_temporal_coupling` | `filepath: str, threshold_percent: int = 30 (0-100)` | JSON `{filepath, threshold_percent, coupled_files:[{filepath, coupling_percent}]}` via Jaccard query | `mcp_server/tools/graph_tools.py` |
 
 ## 6. Known Risks
-_TODO._
+- Sandbox path checks are TOCTOU-prone with symlinks (single-user local tool; accepted).
+- `run_tests` bounds *which command* runs, not what the target's tests do.
+- Runner detection is heuristic (npm wins over pytest when both exist).
+- Self-healing re-index only triggers on `git log` failure; amended-but-unpruned history lingers (ADR-003).
+- `git commit` in the target needs a git identity reachable via the scrubbed env (`HOME` is passed through).
 
 ## 7. Roadmap
 _TODO._

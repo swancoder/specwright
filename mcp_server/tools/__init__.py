@@ -6,9 +6,6 @@ from mcp_server.core.context import HarnessContext
 from mcp_server.core.registry import ToolSpec
 from mcp_server.tools import fs_tools, git_tools, graph_tools, test_tools
 
-NOT_IMPLEMENTED: str = "Not implemented yet"
-
-
 def build_all_tools(ctx: HarnessContext) -> list[ToolSpec]:
     """Collect the tool specs from every tools module."""
     return [
