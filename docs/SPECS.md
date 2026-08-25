@@ -9,9 +9,11 @@ target repo ──git log──▶ GitParser ──ParsedCommit──▶ Indexer
                                         ▲                                    │
                               GraphIgnoreFilter                 query_coupled_files (Jaccard)
                                                                              ▼
-                                                     mcp_server.tools.query_temporal_coupling (Stage 4)
+                                                     mcp_server.tools.query_temporal_coupling
+                                                                             ▼
+              LLM ◀──stdio (MCP)──▶ mcp_server.main (Server) ◀── ToolRegistry (7 tools)
 ```
-_TODO: MCP server / orchestrator layers (Stage 4+)._
+_TODO: orchestrator / agent loop (`bin/run_agent.sh`)._
 
 ## 2. Status Summary
 
@@ -20,13 +22,18 @@ _TODO: MCP server / orchestrator layers (Stage 4+)._
 | 1 | Untrack Internal Engineering Notes | not started | [ADR-001](adr/ADR-001-untrack-internal-engineering-notes.md) |
 | 2 | Knowledge Graph SQLite Schema & .graphignore | storage + filter done; git parsing deferred to Stage 3 | [ADR-002](adr/ADR-002-knowledge-graph-sqlite-schema.md) |
 | 3 | Incremental Indexer & Jaccard Metric Logic | done (tests: `tests/test_indexer_git.py`) | [ADR-003](adr/ADR-003-incremental-indexer-jaccard-metric.md) |
-| 4 | MCP Server & Core Tool Stubs | not started | [ADR-004](adr/ADR-004-mcp-server-initialization.md) |
+| 4 | MCP Server & Core Tool Stubs | done — stdio server, 7 tools registered, `query_temporal_coupling` wired (tests: `tests/test_mcp_server.py`) | [ADR-004](adr/ADR-004-mcp-server-initialization.md) |
 
 ## 3. Component Specifications
 ### 3.1 `bin/` — lifecycle scripts
-_TODO._
+- `start_mcp.sh` — wraps `python -m mcp_server.main` (uses `.venv` if present).
+- `bootstrap_env.sh`, `run_agent.sh` — TODO.
 ### 3.2 `mcp_server/` — MCP boundary
-_TODO._
+- `core/registry.py` — `ToolArgs` (strict Pydantic base, `extra="forbid"`), `ToolSpec`, `ToolRegistry` (`list_tools()`, `call()`, `call_tool_result()`); transport-independent.
+- `core/context.py` — `HarnessContext(target_dir, db)`; DB defaults to `<target>/.agent-harness/graph.db`.
+- `tools/*.py` — each exposes `build_tools(ctx)`; `graph_tools.query_temporal_coupling` is wired to `DatabaseManager.query_coupled_files`, the other six return `"Not implemented yet"`.
+- `main.py` — `build_registry`, `build_server` (`mcp.server.Server` with `on_list_tools`/`on_call_tool`), `serve` over `stdio_server()`, CLI `--target-dir` (required) `--db`.
+- Launch: `./bin/start_mcp.sh --target-dir <repo>` or `python3 -m mcp_server.main --target-dir <repo>`.
 ### 3.3 `knowledge_graph/` — indexer and temporal coupling
 `indexer.py`:
 - `DatabaseManager` — schema init, `latest_commit_hash()`, `wipe()`, `query_coupled_files(path, min_jaccard)` (ADR-003 §5).
@@ -45,15 +52,17 @@ Noise reduction: `knowledge_graph.indexer.GraphIgnoreFilter` (`.graphignore`, `f
 and `MASS_REFACTOR_FILE_LIMIT = 50`.
 
 ## 5. API Reference (MCP tools)
-| Tool | Signature | Module |
-|---|---|---|
-| `read_constitution` | `() -> str` | `mcp_server/tools/fs_tools.py` |
-| `read_specification` | `(spec_id: str) -> str` | `mcp_server/tools/fs_tools.py` |
-| `fs_read` | `(filepath: str) -> str` | `mcp_server/tools/fs_tools.py` |
-| `fs_apply_patch` | `(filepath: str, search_string: str, replace_string: str) -> PatchResult` | `mcp_server/tools/fs_tools.py` |
-| `run_tests` | `(test_target: str) -> TestReport` | `mcp_server/tools/test_tools.py` |
-| `git_commit_feature` | `(message: str, spec_id: str) -> CommitResult` | `mcp_server/tools/git_tools.py` |
-| `query_temporal_coupling` | `(filepath: str, threshold_percent: int) -> TemporalCouplingResult` | `mcp_server/tools/graph_tools.py` |
+Argument schemas are the Pydantic `*Args` models in each module (strict; unknown fields rejected). All tools return text content.
+
+| Tool | Arguments | Behaviour | Module |
+|---|---|---|---|
+| `read_constitution` | — | stub | `mcp_server/tools/fs_tools.py` |
+| `read_specification` | `spec_id: str` | stub | `mcp_server/tools/fs_tools.py` |
+| `fs_read` | `filepath: str` | stub | `mcp_server/tools/fs_tools.py` |
+| `fs_apply_patch` | `filepath, search_string, replace_string: str` | stub | `mcp_server/tools/fs_tools.py` |
+| `run_tests` | `test_target: str` | stub | `mcp_server/tools/test_tools.py` |
+| `git_commit_feature` | `message, spec_id: str` | stub | `mcp_server/tools/git_tools.py` |
+| `query_temporal_coupling` | `filepath: str, threshold_percent: int = 30 (0-100)` | JSON `{filepath, threshold_percent, coupled_files:[{filepath, coupling_percent}]}` via Jaccard query | `mcp_server/tools/graph_tools.py` |
 
 ## 6. Known Risks
 _TODO._
