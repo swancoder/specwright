@@ -17,7 +17,7 @@ pytest tests/
 ```
 
 ## TODO
-- [ ] `git init` the harness and make the Stage 2 and Stage 3 commits (`feat(graph): sqlite schema and .graphignore filter [ADR-002]`, `feat(graph): incremental indexer and jaccard query [ADR-003]`).
+- [x] `git init` done; Stage 2 and Stage 3 committed on `main` (`git log`).
 - [ ] Add `bin/start_env.sh` (CLAUDE.md references it; scaffold has `start_mcp.sh` + `bootstrap_env.sh`) — decide whether to merge or rename.
 - [x] Add `tests/` directory and a first `pytest` smoke test (`tests/test_indexer_storage.py`).
 - [x] Add `.gitignore` (venv, `CLAUDE.md`, `prompts-hist/`, SQLite DB). Still TODO: `git init` + ADR-001 write-up; `.graphignore` lives in the *target* project.
