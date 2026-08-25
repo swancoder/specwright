@@ -1,0 +1,2 @@
+# LLM backend definitions (local model endpoints, model names, generation limits).
+backends: {}
