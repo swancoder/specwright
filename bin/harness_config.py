@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Read config/llm_backends.yaml and config/roles.yaml for bin/run_agent.sh (ADR-005).
+"""Read config/llm_backends.yaml and config/roles.yaml for bin/run_agent.sh (ADR-005, ADR-006).
 
 Subcommands:
   env  [backend]   print `export KEY='value'` lines for the backend (default: `default:` key)
   role [name]      print the persona's system prompt
+  model [backend]  print the model name of the backend
   list             list backends and roles
 """
 
@@ -62,9 +63,6 @@ def backend_env(name: str | None, environ: dict[str, str] | None = None) -> dict
         "OPENAI_BASE_URL": base_url,
         "OPENAI_API_KEY": api_key,
         "MODEL_NAME": str(be["model"]),
-        "ANTHROPIC_BASE_URL": base_url,
-        "ANTHROPIC_AUTH_TOKEN": api_key,
-        "ANTHROPIC_MODEL": str(be["model"]),
     }
     for k, v in (be.get("extra_env") or {}).items():
         env[str(k)] = str(v)
@@ -84,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("env").add_argument("backend", nargs="?")
     sub.add_parser("role").add_argument("role", nargs="?")
+    sub.add_parser("model").add_argument("backend", nargs="?")
     sub.add_parser("list")
     ns = ap.parse_args(argv)
 
@@ -92,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"export {k}={shlex.quote(v)}")
     elif ns.cmd == "role":
         print(role_prompt(ns.role))
+    elif ns.cmd == "model":
+        print(backend_env(ns.backend)["MODEL_NAME"])
     else:
         b, r = _load(BACKENDS_FILE), _load(ROLES_FILE)
         print(f"backends (default: {b.get('default')}): {', '.join(b.get('backends') or {})}")

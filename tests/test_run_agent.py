@@ -1,4 +1,4 @@
-"""Tests for bin/run_agent.sh and bin/harness_config.py (ADR-005)."""
+"""Tests for bin/run_agent.sh, bin/bootstrap_env.sh and bin/harness_config.py (ADR-005, ADR-006)."""
 
 from __future__ import annotations
 
@@ -34,8 +34,8 @@ def test_config_env_exports_openai_vars() -> None:
     env = dict(shlex.split(line.removeprefix("export "))[0].split("=", 1) for line in out.splitlines())
     assert env["OPENAI_BASE_URL"] == "http://localhost:11434/v1"
     assert env["OPENAI_API_KEY"] == "ollama"
-    assert env["MODEL_NAME"].startswith("qwen")
-    assert env["ANTHROPIC_BASE_URL"] == env["OPENAI_BASE_URL"]
+    assert env["MODEL_NAME"] == "gpt-oss:20b"
+    assert not any(k.startswith("ANTHROPIC_") for k in env), "ADR-006: no Anthropic-specific variables"
 
 
 def test_config_env_prefers_api_key_env() -> None:
@@ -74,4 +74,40 @@ def test_run_agent_dry_run_writes_mcp_json_and_command(target: Path) -> None:
     assert cmd[cmd.index("--mcp-config") + 1] == str(target / ".agent-harness" / "mcp.json")
     assert "SystemArchitect" in cmd[cmd.index("--append-system-prompt") + 1]
     assert "Implement spec S-01" in cmd[-1] and "specs/S-01/01_spec.md" in cmd[-1]
-    assert "backend=ollama" in res.stdout and "model=qwen" in res.stdout
+    assert "backend=ollama" in res.stdout and "model=gpt-oss:20b" in res.stdout
+
+
+def test_run_agent_default_opencode_invocation(target: Path) -> None:
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--dry-run"], target)
+    assert res.returncode == 0, res.stderr
+    cmd = shlex.split(res.stdout.splitlines()[-1])
+    assert cmd[:2] == ["opencode", "run"]
+    assert cmd[cmd.index("--dir") + 1] == str(target)
+    assert cmd[cmd.index("-m") + 1] == "ollama/gpt-oss:20b"
+    assert cmd[cmd.index("--agent") + 1] == "SystemArchitect"
+    assert "Implement spec S-01" in cmd[-1]
+
+    oc = json.loads((target / ".agent-harness" / "opencode.json").read_text())
+    assert oc["model"] == "ollama/gpt-oss:20b"
+    assert oc["provider"]["ollama"]["options"]["baseURL"] == "http://localhost:11434/v1"
+    assert oc["provider"]["ollama"]["npm"] == "@ai-sdk/openai-compatible"
+    mcp = oc["mcp"]["agent-harness"]
+    assert mcp["type"] == "local"
+    assert mcp["command"] == [str(HARNESS / "bin" / "start_mcp.sh"), "--target-dir", str(target)]
+    agent = oc["agent"]["SystemArchitect"]
+    assert "Do NOT guess" in agent["prompt"]
+    assert agent["tools"] == {t: False for t in ("bash", "edit", "write", "patch", "multiedit", "webfetch")}
+
+
+def test_bootstrap_check_only_reports_python_env() -> None:
+    res = subprocess.run([str(HARNESS / "bin" / "bootstrap_env.sh"), "--check-only"], capture_output=True, text=True,
+                         env={**os.environ, "PYTHON": sys.executable})
+    assert res.returncode in (0, 1), res.stderr
+    assert "== Python environment" in res.stdout and "== Open Code" in res.stdout and "== LLM backend" in res.stdout
+    assert "[ok]      python 3." in res.stdout
+    assert "[MISSING]" in res.stdout or "environment ready" in res.stdout
+
+
+def test_bootstrap_rejects_unknown_arg() -> None:
+    res = subprocess.run([str(HARNESS / "bin" / "bootstrap_env.sh"), "--bogus"], capture_output=True, text=True)
+    assert res.returncode == 2

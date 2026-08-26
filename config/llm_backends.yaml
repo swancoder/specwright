@@ -14,7 +14,7 @@ backends:
   ollama:
     provider: openai_compatible
     base_url: http://localhost:11434/v1
-    model: qwen2.5-coder:14b
+    model: gpt-oss:20b
     api_key: ollama            # Ollama ignores the key but clients require one
     api_key_env: OLLAMA_API_KEY
     extra_env:

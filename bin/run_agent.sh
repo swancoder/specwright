@@ -1,18 +1,21 @@
 #!/bin/bash
-# Launches the agent CLI against a target project for one specification (ADR-005).
+# Launches the agent CLI (Open Code) against a target project for one specification
+# (ADR-005, ADR-006).
 #
 # Usage: ./bin/run_agent.sh --spec <spec_id> --target-dir <path>
 #                           [--backend <name>] [--role <name>] [--dry-run]
 #
-# 1. exports LLM env vars from config/llm_backends.yaml (OPENAI_BASE_URL, MODEL_NAME, ...)
-# 2. writes <target>/.agent-harness/mcp.json pointing at bin/start_mcp.sh --target-dir <target>
-# 3. runs the agent CLI (AGENT_CMD, default: npx @anthropic-ai/claude-code) inside <target>
+# 1. exports OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_NAME from config/llm_backends.yaml
+# 2. writes <target>/.agent-harness/mcp.json  (bin/start_mcp.sh --target-dir <target>)
+#    and derives <target>/.agent-harness/opencode.json (mcp + provider + persona agent)
+# 3. runs: opencode run --dir <target> -m <backend>/<model> --agent <role> "<prompt>"
+#    AGENT_CMD=<other> falls back to: <other> --mcp-config … --append-system-prompt … "<prompt>"
 set -euo pipefail
 
 HARNESS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="${PYTHON:-$HARNESS_DIR/.venv/bin/python}"
 [ -x "$PYTHON" ] || PYTHON=python3
-AGENT_CMD="${AGENT_CMD:-npx @anthropic-ai/claude-code}"
+AGENT_CMD="${AGENT_CMD:-opencode}"
 
 SPEC_ID=""
 TARGET_DIR="${TARGET_DIR:-}"
@@ -20,7 +23,7 @@ BACKEND=""
 ROLE=""
 DRY_RUN=0
 
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -50,20 +53,51 @@ SPEC_FILE="specs/$SPEC_ID/01_spec.md"
 # --- 1. LLM environment from config/llm_backends.yaml -------------------------
 eval "$("$PYTHON" "$HARNESS_DIR/bin/harness_config.py" env ${BACKEND:+"$BACKEND"})"
 SYSTEM_PROMPT="$("$PYTHON" "$HARNESS_DIR/bin/harness_config.py" role ${ROLE:+"$ROLE"})"
+ROLE_NAME="${ROLE:-$("$PYTHON" -c 'import yaml,sys; print(yaml.safe_load(open(sys.argv[1]))["default"])' "$HARNESS_DIR/config/roles.yaml")}"
 
-# --- 2. MCP wiring: <target>/.agent-harness/mcp.json --------------------------
+# --- 2. MCP wiring: <target>/.agent-harness/{mcp.json,opencode.json} ----------
 HARNESS_STATE="$TARGET_DIR/.agent-harness"
 MCP_CONFIG="$HARNESS_STATE/mcp.json"
+OPENCODE_CONFIG_FILE="$HARNESS_STATE/opencode.json"
 mkdir -p "$HARNESS_STATE"
-HARNESS_DIR="$HARNESS_DIR" TARGET_DIR="$TARGET_DIR" MCP_CONFIG="$MCP_CONFIG" "$PYTHON" - <<'PY'
+HARNESS_DIR="$HARNESS_DIR" TARGET_DIR="$TARGET_DIR" MCP_CONFIG="$MCP_CONFIG" \
+OPENCODE_CONFIG_FILE="$OPENCODE_CONFIG_FILE" ROLE_NAME="$ROLE_NAME" SYSTEM_PROMPT="$SYSTEM_PROMPT" \
+"$PYTHON" - <<'PY'
 import json, os
-cfg = {"mcpServers": {"agent-harness": {
-    "command": os.path.join(os.environ["HARNESS_DIR"], "bin", "start_mcp.sh"),
-    "args": ["--target-dir", os.environ["TARGET_DIR"]],
-    "env": {"PYTHON": os.environ.get("PYTHON", "")},
-}}}
-with open(os.environ["MCP_CONFIG"], "w", encoding="utf-8") as fh:
-    json.dump(cfg, fh, indent=2); fh.write("\n")
+e = os.environ
+server = {
+    "command": os.path.join(e["HARNESS_DIR"], "bin", "start_mcp.sh"),
+    "args": ["--target-dir", e["TARGET_DIR"]],
+    "env": {"PYTHON": e.get("PYTHON", "")},
+}
+with open(e["MCP_CONFIG"], "w", encoding="utf-8") as fh:
+    json.dump({"mcpServers": {"agent-harness": server}}, fh, indent=2); fh.write("\n")
+
+backend, model = e["LLM_BACKEND"], e["MODEL_NAME"]
+opencode = {
+    "$schema": "https://opencode.ai/config.json",
+    "provider": {backend: {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": f"{backend} (agent-harness)",
+        "options": {"baseURL": e["OPENAI_BASE_URL"], "apiKey": e["OPENAI_API_KEY"] or "none"},
+        "models": {model: {"name": model}},
+    }},
+    "model": f"{backend}/{model}",
+    "mcp": {"agent-harness": {
+        "type": "local", "enabled": True,
+        "command": [server["command"], *server["args"]],
+        "environment": {k: v for k, v in server["env"].items() if v},
+    }},
+    "agent": {e["ROLE_NAME"]: {
+        "description": "Agent Harness persona (config/roles.yaml)",
+        "mode": "primary",
+        "model": f"{backend}/{model}",
+        "prompt": e["SYSTEM_PROMPT"],
+        "tools": {t: False for t in ("bash", "edit", "write", "patch", "multiedit", "webfetch")},
+    }},
+}
+with open(e["OPENCODE_CONFIG_FILE"], "w", encoding="utf-8") as fh:
+    json.dump(opencode, fh, indent=2); fh.write("\n")
 PY
 
 # --- 3. Launch the agent CLI scoped to the target ------------------------------
@@ -71,16 +105,23 @@ PROMPT="Implement spec ${SPEC_ID}. Start by calling read_constitution, then read
 export AGENT_SPEC_ID="$SPEC_ID" AGENT_TARGET_DIR="$TARGET_DIR" AGENT_MCP_CONFIG="$MCP_CONFIG"
 
 # shellcheck disable=SC2206  # AGENT_CMD is intentionally word-split
-CMD=($AGENT_CMD --mcp-config "$MCP_CONFIG" --append-system-prompt "$SYSTEM_PROMPT" "$PROMPT")
+AGENT_WORDS=($AGENT_CMD)
+if [ "$(basename "${AGENT_WORDS[0]}")" = "opencode" ]; then
+  export OPENCODE_CONFIG="$OPENCODE_CONFIG_FILE"
+  CMD=("${AGENT_WORDS[@]}" run --dir "$TARGET_DIR" -m "$LLM_BACKEND/$MODEL_NAME" --agent "$ROLE_NAME" "$PROMPT")
+else
+  CMD=("${AGENT_WORDS[@]}" --mcp-config "$MCP_CONFIG" --append-system-prompt "$SYSTEM_PROMPT" "$PROMPT")
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "# backend=$LLM_BACKEND provider=$LLM_PROVIDER model=$MODEL_NAME base_url=$OPENAI_BASE_URL"
   echo "# mcp config: $MCP_CONFIG"
+  echo "# opencode config: $OPENCODE_CONFIG_FILE"
   echo "# cwd: $TARGET_DIR"
   printf '%q ' "${CMD[@]}"; echo
   exit 0
 fi
 
-echo "run_agent.sh: spec=$SPEC_ID backend=$LLM_BACKEND model=$MODEL_NAME target=$TARGET_DIR" >&2
+echo "run_agent.sh: spec=$SPEC_ID backend=$LLM_BACKEND model=$MODEL_NAME agent=$ROLE_NAME target=$TARGET_DIR" >&2
 cd "$TARGET_DIR"
 exec "${CMD[@]}"
