@@ -21,11 +21,18 @@ def _run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> subpr
     return subprocess.run([str(RUN_AGENT), *args], cwd=cwd, env=full_env, capture_output=True, text=True)
 
 
+APPROVED_PLAN = "# plan\n## Pre-flight\n- [x] intent approved.\n- [x] spec reviewed.\n- [x] no conflicts.\n- [x] branch created.\n## Steps\n1. do it\n"
+UNAPPROVED_PLAN = APPROVED_PLAN.replace("- [x] branch created.", "- [ ] branch created.")
+
+
 @pytest.fixture
 def target(tmp_path: Path) -> Path:
     spec = tmp_path / "specs" / "S-01"
     spec.mkdir(parents=True)
     (spec / "01_spec.md").write_text("# spec\n")
+    (spec / "03_plan.md").write_text(APPROVED_PLAN)  # implement phase requires an approved plan (ADR-011)
+    (tmp_path / "specs" / "template").mkdir()
+    (tmp_path / "specs" / "template" / "03_plan.md").write_text("## Pre-flight\n- [ ] a\n")
     return tmp_path
 
 
@@ -211,3 +218,73 @@ def test_generic_agent_cmd_runs_single_attempt(target: Path, fake_opencode: tupl
     res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(generic), "FAKE_LOG": str(log)})
     assert res.returncode == 3 and len(_calls(log)) == 1
     assert "--mcp-config" in _calls(log)[0] and "--continue" not in _calls(log)[0]
+
+
+# ---------------------------------------------------------------- phases and approval gate (ADR-011)
+
+
+def test_implement_phase_refuses_unapproved_or_missing_plan(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    plan = target / "specs" / "S-01" / "03_plan.md"
+    plan.write_text(UNAPPROVED_PLAN)
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(exe), "FAKE_LOG": str(log)})
+    assert res.returncode == 4 and "branch created" in res.stderr and not log.exists(), "agent must not launch"
+    plan.write_text("")
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(exe), "FAKE_LOG": str(log)})
+    assert res.returncode == 5 and "--phase plan" in res.stderr and not log.exists()
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--skip-plan-gate", "--dry-run"], target)
+    assert res.returncode == 0 and "WARNING (--skip-plan-gate)" in res.stderr
+
+
+def test_implement_phase_dry_run_reports_approved_plan(target: Path) -> None:
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--dry-run"], target)
+    assert res.returncode == 0, res.stderr
+    assert "plan approved" in res.stderr and "# phase: implement role: SystemArchitect" in res.stdout
+    mcp = json.loads((target / ".agent-harness" / "mcp.json").read_text())
+    assert "--write-scope" not in mcp["mcpServers"]["agent-harness"]["args"]
+
+
+def test_plan_phase_uses_planner_write_scope_and_tool_subset(target: Path) -> None:
+    (target / "specs" / "S-01" / "03_plan.md").write_text("")  # empty plan is fine for the plan phase
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--phase", "plan", "--dry-run"], target)
+    assert res.returncode == 0, res.stderr
+    assert "# phase: plan role: Planner" in res.stdout
+    cmd = shlex.split(res.stdout.splitlines()[-1])
+    assert cmd[cmd.index("--agent") + 1] == "Planner"
+    assert "specs/S-01/03_plan.md" in cmd[-1] and "Pre-flight checkbox" in cmd[-1] and "- [ ]" in cmd[-1]
+    assert "docs(spec): add implementation plan for S-01" in cmd[-1]
+
+    mcp = json.loads((target / ".agent-harness" / "mcp.json").read_text())
+    assert mcp["mcpServers"]["agent-harness"]["args"] == ["--target-dir", str(target), "--write-scope", "specs"]
+    oc = json.loads((target / ".agent-harness" / "opencode.json").read_text())
+    assert oc["mcp"]["agent-harness"]["command"][-2:] == ["--write-scope", "specs"]
+    tools = oc["agent"]["Planner"]["tools"]
+    assert tools["agent-harness_run_tests"] is False and tools["agent-harness_fs_apply_patch"] is False
+    assert tools["agent-harness_query_temporal_coupling"] is False
+    assert "agent-harness_fs_write" not in tools and "agent-harness_git_commit_feature" not in tools
+    prompt = oc["agent"]["Planner"]["prompt"]
+    assert "Do NOT tick any Pre-flight checkbox" in prompt
+    assert "- agent-harness_run_tests" not in prompt and "- agent-harness_fs_write" in prompt
+
+
+def test_plan_phase_runs_supervisor_and_succeeds_on_marker(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    (target / "specs" / "S-01" / "03_plan.md").unlink()
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--phase", "plan"], target,
+               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "1"})
+    assert res.returncode == 0, res.stderr
+    calls = _calls(log)
+    assert len(calls) == 1 and calls[0][calls[0].index("--agent") + 1] == "Planner"
+    assert "phase=plan" in res.stderr
+
+
+def test_invalid_phase_rejected(target: Path) -> None:
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--phase", "deploy", "--dry-run"], target)
+    assert res.returncode == 2 and "--phase must be" in res.stderr
+
+
+def test_config_tools_subcommand() -> None:
+    out = subprocess.run([sys.executable, str(CONFIG_PY), "tools", "Planner"], capture_output=True, text=True, check=True).stdout.split()
+    assert out == ["read_constitution", "read_specification", "fs_list", "fs_read", "fs_write", "git_commit_feature"]
+    out = subprocess.run([sys.executable, str(CONFIG_PY), "tools"], capture_output=True, text=True, check=True).stdout.split()
+    assert "run_tests" in out and "fs_apply_patch" in out  # default role: SystemArchitect

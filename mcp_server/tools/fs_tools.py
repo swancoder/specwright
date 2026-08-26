@@ -13,7 +13,7 @@ from pydantic import Field
 
 from mcp_server.core.context import HarnessContext
 from mcp_server.core.registry import ToolArgs, ToolError, ToolSpec
-from mcp_server.core.sandbox import Sandbox
+from mcp_server.core.sandbox import Sandbox, SandboxViolation
 
 CONSTITUTION_PATH: Final[str] = ".github/constitution.md"
 SPECS_DIR: Final[str] = "specs"
@@ -86,6 +86,21 @@ def _write_atomic(path: Path, content: str) -> None:
 
 
 # ---------------------------------------------------------------- tools
+
+
+def enforce_write_scope(sandbox: Sandbox, write_scopes: tuple[str, ...], path: Path, filepath: str) -> None:
+    """Raise ``SandboxViolation`` if ``path`` is outside every write scope (ADR-011)."""
+    if not write_scopes:
+        return
+    rel = path.relative_to(sandbox.root).as_posix()
+    parts = Path(rel).parts
+    for scope in write_scopes:
+        sparts = Path(scope).parts
+        if parts[: len(sparts)] == sparts:
+            return
+    raise SandboxViolation(
+        f"writes are restricted to {', '.join(s + '/' for s in write_scopes)} in this phase: {filepath!r}"
+    )
 
 
 def read_constitution(sandbox: Sandbox) -> str:
@@ -164,7 +179,7 @@ def fs_read(sandbox: Sandbox, filepath: str, start_line: int | None = None, end_
     return f"# {filepath}: lines {start}-{end} of {total}\n{body}"
 
 
-def fs_apply_patch(sandbox: Sandbox, filepath: str, search_string: str, replace_string: str) -> str:
+def fs_apply_patch(sandbox: Sandbox, filepath: str, search_string: str, replace_string: str, write_scopes: tuple[str, ...] = ()) -> str:
     """Replace exactly one occurrence of ``search_string`` in a target file.
 
     The file is left untouched when the search string is missing or ambiguous.
@@ -175,6 +190,7 @@ def fs_apply_patch(sandbox: Sandbox, filepath: str, search_string: str, replace_
         replace_string: Text that will replace the matched occurrence.
     """
     path = sandbox.resolve(filepath, must_exist=True)
+    enforce_write_scope(sandbox, write_scopes, path, filepath)
     original = _read_text(sandbox, filepath)
     count = original.count(search_string)
     if count == 0:
@@ -242,7 +258,7 @@ def fs_list(sandbox: Sandbox, directory_path: str = ".", recursive: bool = False
     )
 
 
-def fs_write(sandbox: Sandbox, filepath: str, content: str) -> str:
+def fs_write(sandbox: Sandbox, filepath: str, content: str, write_scopes: tuple[str, ...] = ()) -> str:
     """Create or overwrite a UTF-8 text file inside the target codebase.
 
     Missing parent directories are created. Writes are atomic (temp file + rename).
@@ -252,6 +268,7 @@ def fs_write(sandbox: Sandbox, filepath: str, content: str) -> str:
         content: Full file content.
     """
     path = sandbox.resolve(filepath)
+    enforce_write_scope(sandbox, write_scopes, path, filepath)
     rel = sandbox.relative(path)
     if any(part in EXCLUDED_DIRS for part in rel.split("/")[:-1]):
         raise ToolError(f"refusing to write inside an excluded directory: {filepath!r}")
@@ -269,6 +286,7 @@ def fs_write(sandbox: Sandbox, filepath: str, content: str) -> str:
 def build_tools(ctx: HarnessContext) -> list[ToolSpec]:
     """Tool specs for this module."""
     sb = ctx.sandbox
+    scopes = tuple(ctx.write_scopes)
     return [
         ToolSpec(
             "read_constitution",
@@ -299,12 +317,12 @@ def build_tools(ctx: HarnessContext) -> list[ToolSpec]:
             "fs_write",
             "Create or overwrite a UTF-8 text file in the target codebase; parent directories are created.",
             FsWriteArgs,
-            lambda a: fs_write(sb, a.filepath, a.content),  # type: ignore[attr-defined]
+            lambda a: fs_write(sb, a.filepath, a.content, scopes),  # type: ignore[attr-defined]
         ),
         ToolSpec(
             "fs_apply_patch",
             "Replace exactly one occurrence of search_string in a target file with replace_string.",
             FsApplyPatchArgs,
-            lambda a: fs_apply_patch(sb, a.filepath, a.search_string, a.replace_string),  # type: ignore[attr-defined]
+            lambda a: fs_apply_patch(sb, a.filepath, a.search_string, a.replace_string, scopes),  # type: ignore[attr-defined]
         ),
     ]

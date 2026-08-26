@@ -228,3 +228,41 @@ def test_glob_characters_rejected_by_every_path_tool(sb: Sandbox, target: Path, 
     with pytest.raises(SandboxViolation, match="glob characters"):
         fs_tools.fs_list(sb, bad)
     assert not (target / "src" / "???").exists()
+
+
+# ---------------------------------------------------------------- ADR-011: write scope
+
+
+def test_write_scope_restricts_fs_write_and_patch(sb: Sandbox, target: Path) -> None:
+    (target / "specs" / "001").mkdir(parents=True)
+    scopes = ("specs",)
+    assert fs_tools.fs_write(sb, "specs/001/03_plan.md", "# plan\n", scopes).startswith("created")
+    with pytest.raises(SandboxViolation, match="restricted to specs/"):
+        fs_tools.fs_write(sb, "src/app.py", "x", scopes)
+    with pytest.raises(SandboxViolation, match="restricted to specs/"):
+        fs_tools.fs_write(sb, "specs2/evil.md", "x", scopes)  # prefix must match a path component
+    with pytest.raises(SandboxViolation, match="restricted to specs/"):
+        fs_tools.fs_apply_patch(sb, "src/app.py", "print", "x", scopes)
+    with pytest.raises(SandboxViolation):
+        fs_tools.fs_write(sb, "../out.md", "x", scopes)  # traversal still rejected first
+    assert fs_tools.fs_apply_patch(sb, "specs/001/03_plan.md", "plan", "PLAN", scopes).startswith("patched")
+    assert (target / "src" / "app.py").read_text() == "print('hi')\n"
+    assert fs_tools.fs_write(sb, "src/free.py", "x") .startswith("created"), "no scopes = unrestricted"
+
+
+def test_write_scope_wired_through_context_and_server_args(target: Path) -> None:
+    from mcp_server.core.context import HarnessContext
+    from mcp_server.main import build_registry, parse_args
+
+    ns = parse_args(["--target-dir", str(target), "--write-scope", "specs/", "--write-scope", "docs"])
+    assert ns.write_scope == ["specs/", "docs"]
+    ctx = HarnessContext.for_target(target, write_scopes=tuple(ns.write_scope))
+    try:
+        assert ctx.write_scopes == ("specs", "docs")
+        assert ctx.allows_write("specs/x.md") and ctx.allows_write("docs/a/b.md") and not ctx.allows_write("src/x.py")
+        reg = build_registry(ctx)
+        assert reg.call_tool_result("fs_write", {"filepath": "src/x.py", "content": "x"}).is_error
+        assert not reg.call_tool_result("fs_write", {"filepath": "docs/x.md", "content": "x"}).is_error
+        assert not reg.call_tool_result("fs_read", {"filepath": "src/app.py"}).is_error, "reads are never scoped"
+    finally:
+        ctx.close()

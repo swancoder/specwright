@@ -5,6 +5,7 @@ Subcommands:
   env  [backend]   print `export KEY='value'` lines for the backend (default: `default:` key)
   role [name]      print the persona's system prompt
   model [backend]  print the model name of the backend
+  tools [role]     print the role's allowed harness tools, one per line
   list             list backends and roles
 """
 
@@ -79,12 +80,19 @@ def role_prompt(name: str | None) -> str:
     return str(prompt).rstrip("\n")
 
 
+def role_tools(name: str | None) -> list[str]:
+    name, role = _select(_load(ROLES_FILE), "roles", name, ROLES_FILE)
+    tools = role.get("allowed_tools") or []
+    return [str(t) for t in tools]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="harness_config", description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("env").add_argument("backend", nargs="?")
     sub.add_parser("role").add_argument("role", nargs="?")
     sub.add_parser("model").add_argument("backend", nargs="?")
+    sub.add_parser("tools").add_argument("role", nargs="?")
     sub.add_parser("list")
     ns = ap.parse_args(argv)
 
@@ -95,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
         print(role_prompt(ns.role))
     elif ns.cmd == "model":
         print(backend_env(ns.backend)["MODEL_NAME"])
+    elif ns.cmd == "tools":
+        print("\n".join(role_tools(ns.role)))
     else:
         b, r = _load(BACKENDS_FILE), _load(ROLES_FILE)
         print(f"backends (default: {b.get('default')}): {', '.join(b.get('backends') or {})}")
