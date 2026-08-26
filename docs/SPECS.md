@@ -17,7 +17,8 @@ target repo ──git log──▶ GitParser ──ParsedCommit──▶ Indexer
 config/llm_backends.yaml ─┐                         ┌─▶ <target>/.agent-harness/mcp.json ──▶ bin/start_mcp.sh --target-dir
 config/roles.yaml ────────┴─▶ bin/run_agent.sh ─────┼─▶ <target>/.agent-harness/opencode.json (mcp + provider + persona agent; OPENCODE_CONFIG)
                               (bin/harness_config.py)├─▶ env: OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_NAME
-                                                     └─▶ exec opencode run --dir <target> -m ollama/gpt-oss:20b --agent SystemArchitect "Implement spec <id>"
+                                                     └─▶ supervisor loop (≤ MAX_RETRIES): opencode run --dir <target> -m <backend>/<model> --agent SystemArchitect "Implement spec <id>"
+                                                           ↻ no .agent-harness/run_successful (written by git_commit_feature) → opencode run … --continue "<recovery prompt>"
 ```
 
 ## 2. Status Summary
@@ -32,12 +33,13 @@ config/roles.yaml ────────┴─▶ bin/run_agent.sh ───�
 | 6 | Agent Orchestrator Setup | done — `run_agent.sh` generates `mcp.json`, exports LLM env, launches the agent CLI (tests: `tests/test_run_agent.py`) | [ADR-005](adr/ADR-005-agent-orchestrator-setup.md) |
 | 7 | Bootstrap Environment & Open Code Integration | done — `bootstrap_env.sh`; Open Code launched with derived `opencode.json`; `gpt-oss:20b`; OpenAI-only env (tests: `tests/test_run_agent.py`) | [ADR-006](adr/ADR-006-bootstrap-and-opencode.md) |
 | 8 | Greenfield File Operations | done — `fs_list` + `fs_write` in `fs_tools.py`, sandbox-enforced, exclusions for VCS/venv/cache dirs (tests: `tests/test_fs_tools.py`) | [ADR-007](adr/ADR-007-greenfield-file-operations.md) |
+| 9 | Agent Supervisor & Recovery Loop | done — `run_successful` marker from `git_commit_feature`; `run_agent.sh` retries with `--continue` (tests: `tests/test_git_tools.py`, `tests/test_run_agent.py`) | [ADR-008](adr/ADR-008-agent-supervisor-loop.md) |
 
 ## 3. Component Specifications
 ### 3.1 `bin/` — lifecycle scripts
 - `start_mcp.sh` — wraps `python -m mcp_server.main` (uses `.venv` if present).
 - `bootstrap_env.sh [--python <exe>] [--check-only]` — `set -euo pipefail`; creates `.venv`, installs `requirements.txt`; checks node ≥ 18, npm, `opencode`, Ollama reachability at the backend `base_url` and that `MODEL_NAME` is pulled; prints `[ok]`/`[MISSING] … <fix command>`; exit 1 only on Python-env failure or `--check-only` gaps (ADR-006).
-- `run_agent.sh --spec <id> --target-dir <path> [--backend] [--role] [--dry-run]` — exports `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `MODEL_NAME` (+ `LLM_BACKEND`, `LLM_PROVIDER`) via `harness_config.py env`; writes `<target>/.agent-harness/mcp.json` (`mcpServers.agent-harness` → `bin/start_mcp.sh --target-dir <target>`) and derives `<target>/.agent-harness/opencode.json` (provider `<backend>` = `@ai-sdk/openai-compatible` at `OPENAI_BASE_URL`; `mcp.agent-harness` local server; agent `<role>` with the persona prompt and built-in `bash/edit/write/patch/multiedit/webfetch` disabled); then `OPENCODE_CONFIG=<opencode.json> exec opencode run --dir <target> -m <backend>/<model> --agent <role> "<prompt>"`. `AGENT_CMD` defaults to `opencode`; any other value gets the generic `--mcp-config … --append-system-prompt …` form. Exports `AGENT_SPEC_ID`, `AGENT_TARGET_DIR`, `AGENT_MCP_CONFIG` (ADR-005, ADR-006).
+- `run_agent.sh --spec <id> --target-dir <path> [--backend] [--role] [--dry-run]` — exports `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `MODEL_NAME` (+ `LLM_BACKEND`, `LLM_PROVIDER`) via `harness_config.py env`; writes `<target>/.agent-harness/mcp.json` (`mcpServers.agent-harness` → `bin/start_mcp.sh --target-dir <target>`) and derives `<target>/.agent-harness/opencode.json` (provider `<backend>` = `@ai-sdk/openai-compatible` at `OPENAI_BASE_URL`; `mcp.agent-harness` local server; agent `<role>` with the persona prompt and built-in `bash/edit/write/patch/multiedit/webfetch` disabled); then runs the **supervisor loop** (ADR-008): deletes a stale `<target>/.agent-harness/run_successful`, runs `OPENCODE_CONFIG=<opencode.json> opencode run --dir <target> -m <backend>/<model> --agent <role> "<prompt>"`, and after each exit checks the marker (written by `git_commit_feature`); missing → `opencode run … --continue "Continue with the plan. Your last message was plain text instead of a tool call. …"`, up to `MAX_RETRIES` attempts (env, default 3). Exit 0 = marker seen, 3 = exhausted, 2 = usage. `AGENT_CMD` defaults to `opencode`; any other value gets a single generic `--mcp-config … --append-system-prompt …` run. Exports `AGENT_SPEC_ID`, `AGENT_TARGET_DIR`, `AGENT_MCP_CONFIG` (ADR-005, ADR-006).
 - `harness_config.py env|role|model|list` — PyYAML reader for `config/`; `env` prints `export KEY='v'` lines.
 ### 3.2 `mcp_server/` — MCP boundary
 - `core/registry.py` — `ToolArgs` (strict Pydantic base, `extra="forbid"`), `ToolSpec`, `ToolRegistry` (`list_tools()`, `call()`, `call_tool_result()`); transport-independent.
@@ -76,13 +78,14 @@ Argument schemas are the Pydantic `*Args` models in each module (strict; unknown
 | `fs_write` | `filepath, content: str` | creates or overwrites a UTF-8 file (≤ 1 MiB), `mkdir -p` parents, atomic write; refuses directories and excluded dirs; returns `created\|overwritten <path> (<n> bytes)` | `mcp_server/tools/fs_tools.py` |
 | `fs_apply_patch` | `filepath, search_string, replace_string: str` | replaces exactly one occurrence (0 or >1 → error, file untouched); atomic write | `mcp_server/tools/fs_tools.py` |
 | `run_tests` | `test_target: str` (`path[::selector]`) | runner auto-detect gradlew → npm → pytest; 600 s timeout; JSON `{runner, exit_code, timed_out, stdout, stderr}` | `mcp_server/tools/test_tools.py` |
-| `git_commit_feature` | `message, spec_id: str` | validates Conventional Commits, header `… [spec_id]`, stages `-A` excluding `CLAUDE.md`, `prompts-hist/`, `.agent-harness/`; no co-author trailers | `mcp_server/tools/git_tools.py` |
+| `git_commit_feature` | `message, spec_id: str` | validates Conventional Commits, header `… [spec_id]`, stages `-A` excluding `CLAUDE.md`, `prompts-hist/`, `.agent-harness/`; no co-author trailers; on success touches `.agent-harness/run_successful` (ADR-008) | `mcp_server/tools/git_tools.py` |
 | `query_temporal_coupling` | `filepath: str, threshold_percent: int = 30 (0-100)` | JSON `{filepath, threshold_percent, coupled_files:[{filepath, coupling_percent}]}` via Jaccard query | `mcp_server/tools/graph_tools.py` |
 
 ## 6. Known Risks
 - Sandbox path checks are TOCTOU-prone with symlinks (single-user local tool; accepted).
 - `run_tests` bounds *which command* runs, not what the target's tests do.
 - `fs_write` can overwrite any non-excluded file, including tests; the target's test-lock convention is not enforced by the harness (ADR-007).
+- The `run_successful` marker means *a* commit happened, not that the spec is complete; a legitimate agent stop (reported conflict) is still retried up to `MAX_RETRIES` (ADR-008).
 - Runner detection is heuristic (npm wins over pytest when both exist).
 - Self-healing re-index only triggers on `git log` failure; amended-but-unpruned history lingers (ADR-003).
 - `git commit` in the target needs a git identity reachable via the scrubbed env (`HOME` is passed through).
@@ -90,4 +93,4 @@ Argument schemas are the Pydantic `*Args` models in each module (strict; unknown
 - `OPENCODE_CONFIG` merges over the user's global Open Code config; per-agent tool toggles are honoured by Open Code but cannot stop a model from *describing* edits in text. `gpt-oss:20b` leaks reasoning into visible text via the OpenAI-compatible endpoint (ADR-006).
 
 ## 7. Roadmap
-- Native Ollama adapter in `opencode.json` to separate gpt-oss reasoning; first end-to-end spec run and transcript review; OS-level sandbox for `run_tests`; rename tracking in the indexer.
+- `blocked` marker to short-circuit retries on legitimate stops; milestone-aware loop; native Ollama adapter in `opencode.json` to separate gpt-oss reasoning; first end-to-end spec run and transcript review; OS-level sandbox for `run_tests`; rename tracking in the indexer.
