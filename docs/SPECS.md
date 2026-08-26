@@ -15,8 +15,9 @@ target repo ──git log──▶ GitParser ──ParsedCommit──▶ Indexer
 ```
 ```
 config/llm_backends.yaml ─┐                         ┌─▶ <target>/.agent-harness/mcp.json ──▶ bin/start_mcp.sh --target-dir
-config/roles.yaml ────────┴─▶ bin/run_agent.sh ─────┼─▶ env: OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_NAME (+ ANTHROPIC_*)
-                              (bin/harness_config.py)└─▶ exec $AGENT_CMD --mcp-config … --append-system-prompt <persona> "Implement spec <id>"  (cwd = target)
+config/roles.yaml ────────┴─▶ bin/run_agent.sh ─────┼─▶ <target>/.agent-harness/opencode.json (mcp + provider + persona agent; OPENCODE_CONFIG)
+                              (bin/harness_config.py)├─▶ env: OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_NAME
+                                                     └─▶ exec opencode run --dir <target> -m ollama/gpt-oss:20b --agent SystemArchitect "Implement spec <id>"
 ```
 
 ## 2. Status Summary
@@ -28,14 +29,15 @@ config/roles.yaml ────────┴─▶ bin/run_agent.sh ───�
 | 3 | Incremental Indexer & Jaccard Metric Logic | done (tests: `tests/test_indexer_git.py`) | [ADR-003](adr/ADR-003-incremental-indexer-jaccard-metric.md) |
 | 4 | MCP Server & Core Tool Stubs | done — stdio server, 7 tools registered, `query_temporal_coupling` wired (tests: `tests/test_mcp_server.py`) | [ADR-004](adr/ADR-004-mcp-server-initialization.md) |
 | 5 | Sandboxed Tool Implementations | done — all 7 tools functional behind `Sandbox` (tests: `tests/test_tools_sandbox.py`) | [ADR-001](adr/ADR-001-sandboxing-and-target-isolation.md) |
-| 6 | Agent Orchestrator Setup | done — `run_agent.sh` generates `mcp.json`, exports LLM env, launches placeholder agent CLI (tests: `tests/test_run_agent.py`) | [ADR-005](adr/ADR-005-agent-orchestrator-setup.md) |
+| 6 | Agent Orchestrator Setup | done — `run_agent.sh` generates `mcp.json`, exports LLM env, launches the agent CLI (tests: `tests/test_run_agent.py`) | [ADR-005](adr/ADR-005-agent-orchestrator-setup.md) |
+| 7 | Bootstrap Environment & Open Code Integration | done — `bootstrap_env.sh`; Open Code launched with derived `opencode.json`; `gpt-oss:20b`; OpenAI-only env (tests: `tests/test_run_agent.py`) | [ADR-006](adr/ADR-006-bootstrap-and-opencode.md) |
 
 ## 3. Component Specifications
 ### 3.1 `bin/` — lifecycle scripts
 - `start_mcp.sh` — wraps `python -m mcp_server.main` (uses `.venv` if present).
-- `run_agent.sh --spec <id> --target-dir <path> [--backend] [--role] [--dry-run]` — exports backend env via `harness_config.py env`, writes `<target>/.agent-harness/mcp.json` (`mcpServers.agent-harness` → `bin/start_mcp.sh --target-dir <target>`), then `cd <target>` and `exec $AGENT_CMD --mcp-config <mcp.json> --append-system-prompt <persona> "<prompt>"`. `AGENT_CMD` defaults to `npx @anthropic-ai/claude-code` (placeholder). Exports `AGENT_SPEC_ID`, `AGENT_TARGET_DIR`, `AGENT_MCP_CONFIG` (ADR-005).
-- `harness_config.py env|role|list` — PyYAML reader for `config/`; `env` prints `export KEY='v'` lines.
-- `bootstrap_env.sh` — TODO.
+- `bootstrap_env.sh [--python <exe>] [--check-only]` — `set -euo pipefail`; creates `.venv`, installs `requirements.txt`; checks node ≥ 18, npm, `opencode`, Ollama reachability at the backend `base_url` and that `MODEL_NAME` is pulled; prints `[ok]`/`[MISSING] … <fix command>`; exit 1 only on Python-env failure or `--check-only` gaps (ADR-006).
+- `run_agent.sh --spec <id> --target-dir <path> [--backend] [--role] [--dry-run]` — exports `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `MODEL_NAME` (+ `LLM_BACKEND`, `LLM_PROVIDER`) via `harness_config.py env`; writes `<target>/.agent-harness/mcp.json` (`mcpServers.agent-harness` → `bin/start_mcp.sh --target-dir <target>`) and derives `<target>/.agent-harness/opencode.json` (provider `<backend>` = `@ai-sdk/openai-compatible` at `OPENAI_BASE_URL`; `mcp.agent-harness` local server; agent `<role>` with the persona prompt and built-in `bash/edit/write/patch/multiedit/webfetch` disabled); then `OPENCODE_CONFIG=<opencode.json> exec opencode run --dir <target> -m <backend>/<model> --agent <role> "<prompt>"`. `AGENT_CMD` defaults to `opencode`; any other value gets the generic `--mcp-config … --append-system-prompt …` form. Exports `AGENT_SPEC_ID`, `AGENT_TARGET_DIR`, `AGENT_MCP_CONFIG` (ADR-005, ADR-006).
+- `harness_config.py env|role|model|list` — PyYAML reader for `config/`; `env` prints `export KEY='v'` lines.
 ### 3.2 `mcp_server/` — MCP boundary
 - `core/registry.py` — `ToolArgs` (strict Pydantic base, `extra="forbid"`), `ToolSpec`, `ToolRegistry` (`list_tools()`, `call()`, `call_tool_result()`); transport-independent.
 - `core/context.py` — `HarnessContext(target_dir, db, sandbox)`; DB defaults to `<target>/.agent-harness/graph.db`.
@@ -51,7 +53,7 @@ config/roles.yaml ────────┴─▶ bin/run_agent.sh ───�
 - `Indexer.index_history()` — incremental run, self-healing full rebuild on `GitLogError`, one transaction per commit (`ingest_commit`), returns `IndexReport` (ADR-003 §2, §4).
 - CLI: `python3 -m knowledge_graph.indexer --target-dir <repo> [--db <file>] [--incremental]`.
 ### 3.4 `config/` — backends and roles
-- `llm_backends.yaml` — `default: <name>` + `backends.<name>: {provider, base_url, model, api_key, api_key_env?, extra_env?}`. Profiles: `ollama` (`http://localhost:11434/v1`, `qwen2.5-coder:14b`, placeholder key), `freetoken`. Exported as `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `MODEL_NAME`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, `LLM_BACKEND`, `LLM_PROVIDER`; `api_key_env` overrides `api_key` when set in the caller's env.
+- `llm_backends.yaml` — `default: <name>` + `backends.<name>: {provider, base_url, model, api_key, api_key_env?, extra_env?}`. Profiles: `ollama` (`http://localhost:11434/v1`, `gpt-oss:20b`, placeholder key), `freetoken`. Exported as `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `MODEL_NAME`, `LLM_BACKEND`, `LLM_PROVIDER` (no Anthropic-specific variables — ADR-006); `api_key_env` overrides `api_key` when set in the caller's env.
 - `roles.yaml` — `default: SystemArchitect` + `roles.<name>: {description, backend, allowed_tools, system_prompt}`. `SystemArchitect` mandates constitution → spec → coupling query → patch → `run_tests` → `git_commit_feature`, and forbids guessing contents/dependencies or acting outside the MCP tools (ADR-005).
 
 ## 4. Data Model (SQLite)
@@ -80,7 +82,8 @@ Argument schemas are the Pydantic `*Args` models in each module (strict; unknown
 - Runner detection is heuristic (npm wins over pytest when both exist).
 - Self-healing re-index only triggers on `git log` failure; amended-but-unpruned history lingers (ADR-003).
 - `git commit` in the target needs a git identity reachable via the scrubbed env (`HOME` is passed through).
-- `run_agent.sh` `eval`s the helper's `export` lines; config files are trusted input. Claude Code cannot talk to raw Ollama (`ANTHROPIC_*` needs a translating proxy); the agent CLI is a placeholder (ADR-005).
+- `run_agent.sh` `eval`s the helper's `export` lines; config files are trusted input (ADR-005).
+- `OPENCODE_CONFIG` merges over the user's global Open Code config; per-agent tool toggles are honoured by Open Code but cannot stop a model from *describing* edits in text. `gpt-oss:20b` leaks reasoning into visible text via the OpenAI-compatible endpoint (ADR-006).
 
 ## 7. Roadmap
-- Choose/validate the agent CLI behind `AGENT_CMD` (or an in-repo Python loop); `bootstrap_env.sh`; OS-level sandbox for `run_tests`; rename tracking in the indexer.
+- Native Ollama adapter in `opencode.json` to separate gpt-oss reasoning; first end-to-end spec run and transcript review; OS-level sandbox for `run_tests`; rename tracking in the indexer.
