@@ -70,11 +70,10 @@ def test_run_agent_dry_run_writes_mcp_json_and_command(target: Path) -> None:
     assert server["command"] == str(HARNESS / "bin" / "start_mcp.sh")
     assert server["args"] == ["--target-dir", str(target)]
 
-    cmd = shlex.split(res.stdout.splitlines()[-1])
-    assert cmd[0] == "fake-agent"
-    assert cmd[cmd.index("--mcp-config") + 1] == str(target / ".agent-harness" / "mcp.json")
-    assert "SystemArchitect" in cmd[cmd.index("--append-system-prompt") + 1]
-    assert "Implement spec S-01" in cmd[-1] and "specs/S-01/01_spec.md" in cmd[-1]
+    line = res.stdout.splitlines()[-1]  # printf %q output; bash quoting is not shlex-parseable
+    assert line.startswith(f"fake-agent --mcp-config {target / '.agent-harness' / 'mcp.json'} --append-system-prompt ")
+    assert "SystemArchitect" in line
+    assert "Implement\\ spec\\ S-01" in line and "specs/S-01/01_spec.md" in line
     assert "backend=ollama" in res.stdout and "model=gpt-oss:20b-32k" in res.stdout
 
 
@@ -86,7 +85,7 @@ def test_run_agent_default_opencode_invocation(target: Path) -> None:
     assert resume[:2] == ["opencode", "run"] and "--continue" in resume
     assert resume[-1].startswith("Continue with the plan. Your last message was plain text instead of a tool call.")
     assert "git_commit_feature" in resume[-1]
-    assert "# run marker:" in res.stdout and "max attempts: 3" in res.stdout
+    assert "# run marker:" in res.stdout and "max attempts: 5" in res.stdout
     cmd = shlex.split(res.stdout.splitlines()[-1])
     assert cmd[:2] == ["opencode", "run"]
     assert cmd[cmd.index("--dir") + 1] == str(target)
@@ -172,8 +171,8 @@ def test_supervisor_gives_up_after_max_retries(target: Path, fake_opencode: tupl
     res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(exe), "FAKE_LOG": str(log)})
     assert res.returncode == 3, res.stderr
     calls = _calls(log)
-    assert len(calls) == 3
-    assert [("--continue" in c) for c in calls] == [False, True, True]
+    assert len(calls) == 5
+    assert [("--continue" in c) for c in calls] == [False, True, True, True, True]
     assert "FAILED" in res.stderr and "git_commit_feature was never reached" in res.stderr
 
 
@@ -194,7 +193,7 @@ def test_supervisor_deletes_stale_marker_at_startup(target: Path, fake_opencode:
     res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(exe), "FAKE_LOG": str(log)})
     assert res.returncode == 3, "a stale marker must not count as success"
     assert not stale.exists()
-    assert len(_calls(log)) == 3
+    assert len(_calls(log)) == 5
 
 
 def test_supervisor_first_attempt_success_runs_once(target: Path, fake_opencode: tuple[Path, Path]) -> None:

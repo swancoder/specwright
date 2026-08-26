@@ -8,7 +8,7 @@
 # 1. exports OPENAI_BASE_URL / OPENAI_API_KEY / MODEL_NAME from config/llm_backends.yaml
 # 2. writes <target>/.agent-harness/mcp.json  (bin/start_mcp.sh --target-dir <target>)
 #    and derives <target>/.agent-harness/opencode.json (mcp + provider + persona agent)
-# 3. supervisor loop (MAX_RETRIES attempts, default 3): runs
+# 3. supervisor loop (MAX_RETRIES attempts, default 5): runs
 #      opencode run --dir <target> -m <backend>/<model> --agent <role> "<prompt>"
 #    then checks <target>/.agent-harness/run_successful (written by git_commit_feature);
 #    missing marker -> resume with `opencode run … --continue "<recovery prompt>"`.
@@ -20,7 +20,7 @@ HARNESS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="${PYTHON:-$HARNESS_DIR/.venv/bin/python}"
 [ -x "$PYTHON" ] || PYTHON=python3
 AGENT_CMD="${AGENT_CMD:-opencode}"
-MAX_RETRIES="${MAX_RETRIES:-3}"
+MAX_RETRIES="${MAX_RETRIES:-5}"
 case "$MAX_RETRIES" in ''|*[!0-9]*|0) echo "run_agent.sh: MAX_RETRIES must be a positive integer (got '$MAX_RETRIES')" >&2; exit 2 ;; esac
 
 SPEC_ID=""

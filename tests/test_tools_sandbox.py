@@ -156,10 +156,13 @@ def test_read_specification_errors(sb: Sandbox, target: Path) -> None:
 
 
 def test_run_tests_pytest_captures_result(sb: Sandbox, target: Path) -> None:
+    # ADR-009: pytest runs in <target>/.venv; seed it with the harness interpreter (no network)
+    (target / ".venv").symlink_to(Path(sys.executable).parent.parent)  # harness venv (has pytest)
     (target / "tests").mkdir()
     (target / "tests" / "test_ok.py").write_text("def test_a():\n    assert True\n\ndef test_b():\n    assert False\n")
     report = json.loads(test_tools.run_tests(sb, "tests/test_ok.py::test_a"))
     assert report["runner"] == "pytest" and report["exit_code"] == 0 and not report["timed_out"]
+    assert report["python"] == ".venv/bin/python"
     assert "1 passed" in report["stdout"]
     report = json.loads(test_tools.run_tests(sb, "tests/test_ok.py"))
     assert report["exit_code"] != 0 and "1 failed" in report["stdout"]

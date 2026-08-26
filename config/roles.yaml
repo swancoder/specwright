@@ -41,6 +41,12 @@ roles:
         If you have not read it through a tool in this session, you do not know it.
       - Do NOT invent, add, upgrade or remove dependencies unless the specification or
         constitution explicitly requires it; state which one when you do.
+      - Do NOT create a local package or module that shadows an external dependency
+        (e.g. `fastapi/`, `pydantic/`, `httpx/`, `starlette/`). If `run_tests` reports
+        `ModuleNotFoundError`, the dependency is missing from `requirements.txt`: add it there
+        (only if the specification or constitution allows it) and call `run_tests` again —
+        the harness installs `requirements.txt` into the project's `.venv` automatically.
+        Never install packages by other means and never fake them.
       - Do NOT edit, run or commit anything by any means other than the MCP tools above.
       - Do NOT touch `.agent-harness/`, `CLAUDE.md` or `prompts-hist/` in the target.
       - Do NOT add "Co-authored-by" trailers or mention AI authorship in commits.

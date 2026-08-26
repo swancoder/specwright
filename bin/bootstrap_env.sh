@@ -1,11 +1,13 @@
 #!/bin/bash
 # Prepares the Agent Harness environment (ADR-006).
 #
-# Usage: ./bin/bootstrap_env.sh [--python <exe>] [--check-only]
+# Usage: ./bin/bootstrap_env.sh [--python <exe>] [--check-only] [--target-dir <path>]
 #
 # 1. creates .venv (if missing) and installs requirements.txt
 # 2. checks Open Code prerequisites: node >= 18, npm, opencode
 # 3. checks the default LLM backend: Ollama reachable, configured model pulled
+# 4. --target-dir: pre-provisions <target>/.venv from the target's requirements.txt
+#    (same code path run_tests uses; ADR-009)
 # Missing optional tooling is reported with the command that fixes it.
 set -euo pipefail
 
@@ -13,12 +15,15 @@ HARNESS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$HARNESS_DIR"
 PY_EXE="${PYTHON:-python3}"
 CHECK_ONLY=0
+TARGET_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --python)   PY_EXE="${2:-}"; shift 2 ;;
     --python=*) PY_EXE="${1#*=}"; shift ;;
     --check-only) CHECK_ONLY=1; shift ;;
-    -h|--help)  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --target-dir)   TARGET_DIR="${2:-}"; shift 2 ;;
+    --target-dir=*) TARGET_DIR="${1#*=}"; shift ;;
+    -h|--help)  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "bootstrap_env.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
@@ -90,6 +95,24 @@ if ENV_OUT="$("$CFG_PY" bin/harness_config.py env 2>/dev/null)"; then
   fi
 else
   miss "config/llm_backends.yaml unreadable (run with .venv or install pyyaml)"
+fi
+
+# --- 4. Target environment (optional) -----------------------------------------
+if [ -n "$TARGET_DIR" ]; then
+  echo "== Target environment ($TARGET_DIR)"
+  if [ ! -d "$TARGET_DIR" ]; then
+    miss "target dir '$TARGET_DIR' does not exist"
+  elif [ ! -x "$VPY" ]; then
+    miss "harness .venv required to provision a target — run ./bin/bootstrap_env.sh first"
+  elif [ "$CHECK_ONLY" -eq 1 ]; then
+    if [ -x "$TARGET_DIR/.venv/bin/python" ]; then ok "target .venv present"; else miss "target .venv — run ./bin/bootstrap_env.sh --target-dir $TARGET_DIR"; fi
+  else
+    if OUT="$(PYTHONPATH="$HARNESS_DIR" "$VPY" -m mcp_server.tools.test_tools --target-dir "$TARGET_DIR" 2>&1)"; then
+      printf '%s\n' "$OUT" | sed 's/^/  /'; ok "target .venv provisioned"
+    else
+      printf '%s\n' "$OUT" | sed 's/^/  /'; miss "target provisioning failed (see above)"
+    fi
+  fi
 fi
 
 echo
