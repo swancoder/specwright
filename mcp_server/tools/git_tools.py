@@ -1,4 +1,4 @@
-"""Git operations confined to the target repository (ADR-001 §4)."""
+"""Git operations confined to the target repository (ADR-001 §4, ADR-008)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ CONVENTIONAL_COMMIT_RE: Final[re.Pattern[str]] = re.compile(
     r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: \S.*"
 )
 SPEC_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+#: Empty file the supervisor loop in bin/run_agent.sh polls for (ADR-008). Written only
+#: after a successful commit; lives under the never-staged .agent-harness/ directory.
+RUN_SUCCESSFUL_MARKER: Final[str] = ".agent-harness/run_successful"
 
 #: Paths the agent must never stage in a target repo (internal engineering notes and
 #: harness state), regardless of the target's .gitignore.
@@ -56,6 +59,13 @@ def build_commit_message(message: str, spec_id: str) -> str:
     return header + (sep + body if body.strip() else "")
 
 
+def write_marker(sandbox: Sandbox) -> None:
+    """Create the empty ``RUN_SUCCESSFUL_MARKER`` inside the target (ADR-008)."""
+    marker = sandbox.resolve(RUN_SUCCESSFUL_MARKER)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+
 def git_commit_feature(sandbox: Sandbox, message: str, spec_id: str) -> str:
     """Stage all changes (except local-only files) and commit in the target repository.
 
@@ -65,6 +75,9 @@ def git_commit_feature(sandbox: Sandbox, message: str, spec_id: str) -> str:
 
     Returns:
         ``"committed <short-hash>: <header>"`` or ``"nothing to commit"``.
+
+    On a successful commit the ``.agent-harness/run_successful`` marker is written so the
+    orchestrator's supervisor loop can recognise a completed run (ADR-008).
     """
     if not (sandbox.root / ".git").exists():
         raise ToolError("target directory is not a git repository")
@@ -76,6 +89,7 @@ def git_commit_feature(sandbox: Sandbox, message: str, spec_id: str) -> str:
 
     _git(sandbox, "commit", "-q", "--no-verify", "-m", full_message)
     short = _git(sandbox, "rev-parse", "--short", "HEAD").strip()
+    write_marker(sandbox)
     return f"committed {short}: {full_message.splitlines()[0]}"
 
 

@@ -1,4 +1,4 @@
-"""Tests for bin/run_agent.sh, bin/bootstrap_env.sh and bin/harness_config.py (ADR-005, ADR-006)."""
+"""Tests for bin/run_agent.sh, bin/bootstrap_env.sh and bin/harness_config.py (ADR-005, ADR-006, ADR-008)."""
 
 from __future__ import annotations
 
@@ -80,6 +80,12 @@ def test_run_agent_dry_run_writes_mcp_json_and_command(target: Path) -> None:
 def test_run_agent_default_opencode_invocation(target: Path) -> None:
     res = _run(["--spec", "S-01", "--target-dir", str(target), "--dry-run"], target)
     assert res.returncode == 0, res.stderr
+    resume_line = next(l for l in res.stdout.splitlines() if l.startswith("# resume: "))
+    resume = shlex.split(resume_line.removeprefix("# resume: "))
+    assert resume[:2] == ["opencode", "run"] and "--continue" in resume
+    assert resume[-1].startswith("Continue with the plan. Your last message was plain text instead of a tool call.")
+    assert "git_commit_feature" in resume[-1]
+    assert "# run marker:" in res.stdout and "max attempts: 3" in res.stdout
     cmd = shlex.split(res.stdout.splitlines()[-1])
     assert cmd[:2] == ["opencode", "run"]
     assert cmd[cmd.index("--dir") + 1] == str(target)
@@ -114,3 +120,92 @@ def test_bootstrap_check_only_reports_python_env() -> None:
 def test_bootstrap_rejects_unknown_arg() -> None:
     res = subprocess.run([str(HARNESS / "bin" / "bootstrap_env.sh"), "--bogus"], capture_output=True, text=True)
     assert res.returncode == 2
+
+
+# ---------------------------------------------------------------- supervisor loop (ADR-008)
+
+FAKE_AGENT = """#!/bin/bash
+# Fake Open Code: records every invocation; creates the marker on the Nth call.
+{ printf '%q ' "$@"; echo; } >> "$FAKE_LOG"
+n=$(wc -l < "$FAKE_LOG")
+if [ -n "${SUCCEED_ON:-}" ] && [ "$n" -ge "$SUCCEED_ON" ]; then
+  mkdir -p "$AGENT_TARGET_DIR/.agent-harness" && : > "$AGENT_TARGET_DIR/.agent-harness/run_successful"
+fi
+exit 0
+"""
+
+
+@pytest.fixture
+def fake_opencode(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    """A directory containing an executable named ``opencode`` plus its invocation log."""
+    d = tmp_path_factory.mktemp("fake")
+    exe = d / "opencode"
+    exe.write_text(FAKE_AGENT)
+    exe.chmod(0o755)
+    log = d / "calls.log"
+    return exe, log
+
+
+def _calls(log: Path) -> list[list[str]]:
+    return [shlex.split(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def test_supervisor_succeeds_on_second_attempt_with_continue(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target,
+               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "2"})
+    assert res.returncode == 0, res.stderr
+    calls = _calls(log)
+    assert len(calls) == 2
+    assert "--continue" not in calls[0] and calls[0][-1].startswith("Implement spec S-01")
+    assert "--continue" in calls[1] and calls[1][-1].startswith("Continue with the plan.")
+    assert calls[1][calls[1].index("--agent") + 1] == "SystemArchitect"
+    assert "run successful" in res.stderr and "after attempt 2" in res.stderr
+    assert (target / ".agent-harness" / "run_successful").exists()
+
+
+def test_supervisor_gives_up_after_max_retries(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(exe), "FAKE_LOG": str(log)})
+    assert res.returncode == 3, res.stderr
+    calls = _calls(log)
+    assert len(calls) == 3
+    assert [("--continue" in c) for c in calls] == [False, True, True]
+    assert "FAILED" in res.stderr and "git_commit_feature was never reached" in res.stderr
+
+
+def test_supervisor_respects_max_retries_override(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target,
+               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "MAX_RETRIES": "1"})
+    assert res.returncode == 3 and len(_calls(log)) == 1
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(exe), "MAX_RETRIES": "0"})
+    assert res.returncode == 2 and "MAX_RETRIES" in res.stderr
+
+
+def test_supervisor_deletes_stale_marker_at_startup(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    stale = target / ".agent-harness" / "run_successful"
+    stale.parent.mkdir()
+    stale.touch()
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(exe), "FAKE_LOG": str(log)})
+    assert res.returncode == 3, "a stale marker must not count as success"
+    assert not stale.exists()
+    assert len(_calls(log)) == 3
+
+
+def test_supervisor_first_attempt_success_runs_once(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target,
+               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "1"})
+    assert res.returncode == 0 and len(_calls(log)) == 1 and "after attempt 1" in res.stderr
+
+
+def test_generic_agent_cmd_runs_single_attempt(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    generic = exe.parent / "some-agent"
+    generic.write_text(FAKE_AGENT)
+    generic.chmod(0o755)
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(generic), "FAKE_LOG": str(log)})
+    assert res.returncode == 3 and len(_calls(log)) == 1
+    assert "--mcp-config" in _calls(log)[0] and "--continue" not in _calls(log)[0]
