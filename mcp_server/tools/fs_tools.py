@@ -1,7 +1,8 @@
-"""Filesystem and specification tools, confined to the target directory (ADR-001 §2)."""
+"""Filesystem and specification tools, confined to the target directory (ADR-001 §2, ADR-007)."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -18,6 +19,13 @@ CONSTITUTION_PATH: Final[str] = ".github/constitution.md"
 SPECS_DIR: Final[str] = "specs"
 MAX_READ_BYTES: Final[int] = 512 * 1024
 SPEC_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+MAX_WRITE_BYTES: Final[int] = 1024 * 1024
+MAX_LIST_ENTRIES: Final[int] = 2000
+#: Directory names never listed (any depth) and never written into (ADR-007).
+EXCLUDED_DIRS: Final[frozenset[str]] = frozenset({
+    ".git", ".hg", ".svn", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".ruff_cache", "node_modules", "dist", "build", ".agent-harness", ".idea", ".vscode",
+})
 
 
 class ReadConstitutionArgs(ToolArgs):
@@ -30,6 +38,16 @@ class ReadSpecificationArgs(ToolArgs):
 
 class FsReadArgs(ToolArgs):
     filepath: str = Field(description="Path relative to the target codebase root.")
+
+
+class FsListArgs(ToolArgs):
+    directory_path: str = Field(default=".", description="Directory relative to the target codebase root ('.' = root).")
+    recursive: bool = Field(default=False, description="Walk subdirectories (excluded dirs are always skipped).")
+
+
+class FsWriteArgs(ToolArgs):
+    filepath: str = Field(description="Path relative to the target codebase root; parent directories are created.")
+    content: str = Field(description="Full UTF-8 text content of the file (overwrites an existing file).")
 
 
 class FsApplyPatchArgs(ToolArgs):
@@ -146,6 +164,87 @@ def fs_apply_patch(sandbox: Sandbox, filepath: str, search_string: str, replace_
     return f"patched {filepath}: 1 occurrence replaced"
 
 
+def _entry(sandbox: Sandbox, path: Path) -> dict[str, object]:
+    if path.is_symlink():
+        kind = "symlink"
+    elif path.is_dir():
+        kind = "dir"
+    elif path.is_file():
+        kind = "file"
+    else:
+        kind = "other"
+    # Lexical (unresolved) relative path: a symlink is reported by its own name, never
+    # by the target it points to (which may lie outside the sandbox).
+    entry: dict[str, object] = {"path": path.relative_to(sandbox.root).as_posix(), "type": kind}
+    if kind == "file":
+        entry["size"] = path.stat().st_size
+    return entry
+
+
+def _iter_children(directory: Path) -> list[Path]:
+    children = [c for c in directory.iterdir() if c.name not in EXCLUDED_DIRS]
+    return sorted(children, key=lambda c: (not c.is_dir(), c.name))
+
+
+def fs_list(sandbox: Sandbox, directory_path: str = ".", recursive: bool = False) -> str:
+    """List files and directories inside the target codebase as JSON.
+
+    Excluded directories (``EXCLUDED_DIRS``: VCS, virtualenvs, caches, ``node_modules``,
+    ``.agent-harness`` …) are skipped at every depth to keep the listing small.
+
+    Args:
+        directory_path: Directory relative to the target root; ``"."`` is the root.
+        recursive: Walk subdirectories; output is capped at ``MAX_LIST_ENTRIES``.
+    """
+    root = sandbox.resolve(directory_path, must_exist=True)
+    if not root.is_dir():
+        raise ToolError(f"not a directory: {directory_path!r}")
+    if any(part in EXCLUDED_DIRS for part in sandbox.relative(root).split("/") if part):
+        raise ToolError(f"directory is excluded from listing: {directory_path!r}")
+
+    entries: list[dict[str, object]] = []
+    truncated = False
+    stack = [root]
+    while stack:
+        current = stack.pop(0)
+        for child in _iter_children(current):
+            if len(entries) >= MAX_LIST_ENTRIES:
+                truncated = True
+                stack.clear()
+                break
+            entries.append(_entry(sandbox, child))
+            if recursive and child.is_dir() and not child.is_symlink():
+                stack.append(child)
+    return json.dumps(
+        {"directory": sandbox.relative(root) or ".", "entries": entries, "truncated": truncated},
+        indent=2,
+    )
+
+
+def fs_write(sandbox: Sandbox, filepath: str, content: str) -> str:
+    """Create or overwrite a UTF-8 text file inside the target codebase.
+
+    Missing parent directories are created. Writes are atomic (temp file + rename).
+
+    Args:
+        filepath: Path relative to the target root.
+        content: Full file content.
+    """
+    path = sandbox.resolve(filepath)
+    rel = sandbox.relative(path)
+    if any(part in EXCLUDED_DIRS for part in rel.split("/")[:-1]):
+        raise ToolError(f"refusing to write inside an excluded directory: {filepath!r}")
+    if path.is_dir():
+        raise ToolError(f"path is a directory: {filepath!r}")
+    size = len(content.encode("utf-8"))
+    if size > MAX_WRITE_BYTES:
+        raise ToolError(f"content too large ({size} bytes > {MAX_WRITE_BYTES}): {filepath!r}")
+    existed = path.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_atomic(path, content)
+    return f"{'overwritten' if existed else 'created'} {rel} ({size} bytes)"
+
+
 def build_tools(ctx: HarnessContext) -> list[ToolSpec]:
     """Tool specs for this module."""
     sb = ctx.sandbox
@@ -167,6 +266,18 @@ def build_tools(ctx: HarnessContext) -> list[ToolSpec]:
             "Read a UTF-8 text file inside the target codebase (repository-relative path).",
             FsReadArgs,
             lambda a: fs_read(sb, a.filepath),  # type: ignore[attr-defined]
+        ),
+        ToolSpec(
+            "fs_list",
+            "List files and directories (JSON) inside the target codebase; VCS/venv/cache dirs are excluded.",
+            FsListArgs,
+            lambda a: fs_list(sb, a.directory_path, a.recursive),  # type: ignore[attr-defined]
+        ),
+        ToolSpec(
+            "fs_write",
+            "Create or overwrite a UTF-8 text file in the target codebase; parent directories are created.",
+            FsWriteArgs,
+            lambda a: fs_write(sb, a.filepath, a.content),  # type: ignore[attr-defined]
         ),
         ToolSpec(
             "fs_apply_patch",

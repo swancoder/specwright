@@ -74,12 +74,12 @@ with open(e["MCP_CONFIG"], "w", encoding="utf-8") as fh:
     json.dump({"mcpServers": {"agent-harness": server}}, fh, indent=2); fh.write("\n")
 
 backend, model = e["LLM_BACKEND"], e["MODEL_NAME"]
-HARNESS_TOOLS = ("read_constitution", "read_specification", "fs_read", "fs_apply_patch",
-                 "run_tests", "git_commit_feature", "query_temporal_coupling")
+HARNESS_TOOLS = ("read_constitution", "read_specification", "fs_list", "fs_read", "fs_write",
+                 "fs_apply_patch", "run_tests", "git_commit_feature", "query_temporal_coupling")
 # Open Code exposes MCP tools as <server>_<tool>; local models call bare names otherwise.
 TOOL_NOTE = ("\n\nTool names in this session (use them EXACTLY as written, no other tools exist):\n"
              + "\n".join(f"- agent-harness_{t}" for t in HARNESS_TOOLS)
-             + "\nThere is no tool for listing, scanning or opening directories; read files by path with agent-harness_fs_read.\n")
+             + "\nExplore with agent-harness_fs_list, read with agent-harness_fs_read, create with agent-harness_fs_write.\n")
 BUILTIN_OFF = ("bash", "edit", "write", "patch", "multiedit", "webfetch", "read", "glob", "grep", "list", "task", "skill")
 opencode = {
     "$schema": "https://opencode.ai/config.json",

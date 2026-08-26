@@ -18,6 +18,8 @@ EXPECTED_TOOLS = {
     "read_constitution",
     "read_specification",
     "fs_read",
+    "fs_list",
+    "fs_write",
     "fs_apply_patch",
     "run_tests",
     "git_commit_feature",
