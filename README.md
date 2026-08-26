@@ -11,7 +11,8 @@ with a Git-history-based temporal coupling knowledge graph (SQLite).
 ```bash
 ./bin/bootstrap_env.sh                       # create venv, install requirements.txt
 ./bin/start_mcp.sh --target-dir <path>       # MCP server over stdio (+ SQLite graph)
-./bin/run_agent.sh --spec <spec_id>          # run an agent session
+./bin/run_agent.sh --spec <spec_id> --target-dir <path>   # wire MCP + LLM env, launch agent CLI
+./bin/run_agent.sh --spec <spec_id> --target-dir <path> --dry-run   # show what would run
 python3 -m knowledge_graph.indexer --incremental
 pytest tests/
 ```
@@ -26,7 +27,7 @@ pytest tests/
 - [x] Stage 3: incremental indexer + self-healing + Jaccard query (ADR-003). Follow-ups: detect rewritten-but-not-pruned history via `git merge-base --is-ancestor`; rename tracking; don't wipe on transient git errors; `git log --all` includes abandoned branches.
 - [x] Stage 4: MCP stdio server, 7 tools registered, `query_temporal_coupling` wired (ADR-004).
 - [x] Stage 5: all six tools implemented behind `mcp_server/core/sandbox.py` (ADR-001). Follow-ups: OS-level sandbox (container) for `run_tests`; configurable test runner override; `fs_write`/`fs_list` tools if the agent loop needs them.
-- [ ] Implement `bin/bootstrap_env.sh` and `bin/run_agent.sh` (agent loop).
-- [ ] Fill `config/llm_backends.yaml` and `config/roles.yaml`.
+- [x] Stage 6: `bin/run_agent.sh` + `bin/harness_config.py`, `config/llm_backends.yaml` (ollama default), `config/roles.yaml` (SystemArchitect) (ADR-005). Follow-ups: pick the real agent CLI (Claude Code needs an Anthropic-protocol proxy in front of Ollama); `AGENT_CMD` override is the placeholder.
+- [ ] Implement `bin/bootstrap_env.sh`.
 - [ ] Fill `docs/SPECS.md` sections marked _TODO_.
 - [ ] Rewrite the scaffold generator script later (deferred).
