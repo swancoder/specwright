@@ -12,7 +12,9 @@ with a Git-history-based temporal coupling knowledge graph (SQLite).
 ./bin/bootstrap_env.sh                       # venv + requirements; checks node/opencode/ollama/model
 ./bin/bootstrap_env.sh --target-dir <path>   # also pre-provision <target>/.venv from its requirements.txt
 ./bin/start_mcp.sh --target-dir <path>       # MCP server over stdio (+ SQLite graph)
-./bin/run_agent.sh --spec <spec_id> --target-dir <path>   # Open Code + MCP + gpt-oss:20b via Ollama
+./bin/run_agent.sh --spec <spec_id> --target-dir <path> --phase plan   # Planner writes+commits specs/<id>/03_plan.md
+#   → human reviews the plan and ticks every '- [ ]' under '## Pre-flight'
+./bin/run_agent.sh --spec <spec_id> --target-dir <path>                # implement (refuses until the plan is approved)
 ./bin/run_agent.sh --spec <spec_id> --target-dir <path> --dry-run   # show what would run
 python3 -m knowledge_graph.indexer --incremental
 pytest tests/
@@ -29,6 +31,7 @@ pytest tests/
 - [x] Stage 4: MCP stdio server, 7 tools registered, `query_temporal_coupling` wired (ADR-004).
 - [x] Stage 5: all six tools implemented behind `mcp_server/core/sandbox.py` (ADR-001). Follow-ups: OS-level sandbox (container) for `run_tests`; configurable test runner override; `fs_write`/`fs_list` tools if the agent loop needs them.
 - [x] Stage 6: `bin/run_agent.sh` + `bin/harness_config.py`, `config/llm_backends.yaml` (ollama default), `config/roles.yaml` (SystemArchitect) (ADR-005). Follow-ups: pick the real agent CLI (Claude Code needs an Anthropic-protocol proxy in front of Ollama); `AGENT_CMD` override is the placeholder.
+- [x] Stage 12: `--phase plan|implement`; `Planner` persona; approval gate on `03_plan.md` pre-flight checkboxes (`bin/plan_gate.py`, exit 4/5); MCP `--write-scope` enforced in `fs_write`/`fs_apply_patch`; per-role tool exposure in Open Code (ADR-011). Follow-ups: `blocked` marker; branch creation as a harness step.
 - [x] Stage 11: `fs_read(start_line,end_line)`; `Sandbox.resolve` rejects `* ? [ ]`; `*.db/*.sqlite/*.sqlite3/*.db3` never staged; `run_tests(timeout_seconds=60, ≤600)` with explicit `timeout_message`; persona: milestone commits + honesty/stuck rule (ADR-010). Follow-ups: `blocked` marker so the supervisor stops nudging an honest stop.
 - [x] Stage 10: `run_tests` runs `<target>/.venv/bin/python -m pytest`, creating the venv and installing `requirements.txt` (re-installs on change, self-heals pytest); `bootstrap_env.sh --target-dir`; anti-shadowing persona rule; `MAX_RETRIES=5` (ADR-009). Follow-ups: `pyproject.toml` (`pip install -e .`) support; interpreter version from the constitution.
 - [x] Stage 9: supervisor loop in `run_agent.sh` — `git_commit_feature` writes `.agent-harness/run_successful`; up to `MAX_RETRIES=3` attempts, resumes with `opencode run --continue`; exit 0/3 (ADR-008). Follow-ups: a `blocked` marker so legitimate stops aren't retried; loop on plan milestones rather than first commit.
