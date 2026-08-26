@@ -35,6 +35,7 @@ config/roles.yaml ────────┴─▶ bin/run_agent.sh ───�
 | 8 | Greenfield File Operations | done — `fs_list` + `fs_write` in `fs_tools.py`, sandbox-enforced, exclusions for VCS/venv/cache dirs (tests: `tests/test_fs_tools.py`) | [ADR-007](adr/ADR-007-greenfield-file-operations.md) |
 | 9 | Agent Supervisor & Recovery Loop | done — `run_successful` marker from `git_commit_feature`; `run_agent.sh` retries with `--continue` (tests: `tests/test_git_tools.py`, `tests/test_run_agent.py`) | [ADR-008](adr/ADR-008-agent-supervisor-loop.md) |
 | 10 | Target Environment Management | done — `run_tests` provisions and uses `<target>/.venv`; `bootstrap_env.sh --target-dir`; persona anti-shadowing rule; `MAX_RETRIES=5` (tests: `tests/test_test_tools.py`) | [ADR-009](adr/ADR-009-target-environment-management.md) |
+| 11 | Harness Stability & Tool Refinements | done — `fs_read` line ranges, glob-char rejection in `Sandbox`, SQLite staging exclusions, bounded/explicit `run_tests` timeout, persona milestone-commit + stuck rules (tests: `test_fs_tools.py`, `test_git_tools.py`, `test_test_tools.py`) | [ADR-010](adr/ADR-010-harness-stability-and-refinements.md) |
 
 ## 3. Component Specifications
 ### 3.1 `bin/` — lifecycle scripts
@@ -45,7 +46,7 @@ config/roles.yaml ────────┴─▶ bin/run_agent.sh ───�
 ### 3.2 `mcp_server/` — MCP boundary
 - `core/registry.py` — `ToolArgs` (strict Pydantic base, `extra="forbid"`), `ToolSpec`, `ToolRegistry` (`list_tools()`, `call()`, `call_tool_result()`); transport-independent.
 - `core/context.py` — `HarnessContext(target_dir, db, sandbox)`; DB defaults to `<target>/.agent-harness/graph.db`.
-- `core/sandbox.py` — `Sandbox.resolve()` (rejects absolute, `..`, symlink escapes) and `Sandbox.run()` (no shell, cwd=target, scrubbed env, timeout); `SandboxViolation`/`ToolError` surface as `is_error` results (ADR-001).
+- `core/sandbox.py` — `Sandbox.resolve()` (rejects absolute, `..`, glob characters `* ? [ ]` (ADR-010), symlink escapes) and `Sandbox.run()` (no shell, cwd=target, scrubbed env, timeout); `SandboxViolation`/`ToolError` surface as `is_error` results (ADR-001).
 - `tools/*.py` — each exposes `build_tools(ctx)`; every tool goes through `ctx.sandbox`. See §5 for behaviour. `fs_tools.EXCLUDED_DIRS`, `MAX_LIST_ENTRIES`, `MAX_WRITE_BYTES` govern `fs_list`/`fs_write` (ADR-007).
 - `main.py` — `build_registry`, `build_server` (`mcp.server.Server` with `on_list_tools`/`on_call_tool`), `serve` over `stdio_server()`, CLI `--target-dir` (required) `--db`.
 - Launch: `./bin/start_mcp.sh --target-dir <repo>` or `python3 -m mcp_server.main --target-dir <repo>`.
@@ -58,7 +59,7 @@ config/roles.yaml ────────┴─▶ bin/run_agent.sh ───�
 - CLI: `python3 -m knowledge_graph.indexer --target-dir <repo> [--db <file>] [--incremental]`.
 ### 3.4 `config/` — backends and roles
 - `llm_backends.yaml` — `default: <name>` + `backends.<name>: {provider, base_url, model, api_key, api_key_env?, extra_env?}`. Profiles: `ollama` (`http://localhost:11434/v1`, `gpt-oss:20b-32k`, placeholder key), `freetoken`. Exported as `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `MODEL_NAME`, `LLM_BACKEND`, `LLM_PROVIDER`, `LLM_CONTEXT_LENGTH`, `LLM_MAX_OUTPUT_TOKENS` (no Anthropic-specific variables — ADR-006); `context_length` must equal the Ollama model's `num_ctx` and is written to `opencode.json` as the model `limit` — Open Code treats a model without a limit as a 0-token context and compacts after every tool call; `api_key_env` overrides `api_key` when set in the caller's env.
-- `roles.yaml` — `default: SystemArchitect` + `roles.<name>: {description, backend, allowed_tools, system_prompt}`. `SystemArchitect` mandates constitution → spec → `fs_list` exploration → coupling query → `fs_write`/`fs_apply_patch` → `run_tests` → `git_commit_feature`; forbids shadowing external dependencies with local packages (missing module ⇒ fix `requirements.txt`, ADR-009), and forbids guessing contents/dependencies or acting outside the MCP tools (ADR-005).
+- `roles.yaml` — `default: SystemArchitect` + `roles.<name>: {description, backend, allowed_tools, system_prompt}`. `SystemArchitect` mandates constitution → spec → `fs_list` exploration → coupling query → `fs_write`/`fs_apply_patch` → `run_tests` → `git_commit_feature`; forbids shadowing external dependencies with local packages (missing module ⇒ fix `requirements.txt`, ADR-009); commits at every green milestone and stops honestly after 3 failed attempts on one test — never claims a commit that did not happen (ADR-010), and forbids guessing contents/dependencies or acting outside the MCP tools (ADR-005).
 
 ## 4. Data Model (SQLite)
 Tables `commits`, `files`, `commit_files`, `file_pairs` — DDL and rationale in
@@ -74,19 +75,20 @@ Argument schemas are the Pydantic `*Args` models in each module (strict; unknown
 |---|---|---|---|
 | `read_constitution` | — | reads `.github/constitution.md` | `mcp_server/tools/fs_tools.py` |
 | `read_specification` | `spec_id: str` | concatenates `*.md` under `specs/<id>*/` (or `specs/<id>.md`); ambiguous prefix → error | `mcp_server/tools/fs_tools.py` |
-| `fs_read` | `filepath: str` | UTF-8 text ≤ 512 KiB inside target | `mcp_server/tools/fs_tools.py` |
+| `fs_read` | `filepath: str, start_line?: int, end_line?: int` (1-indexed, inclusive) | UTF-8 text ≤ 512 KiB inside target; a range returns only that slice prefixed with `# <path>: lines a-b of N` (`end_line` clamped to EOF; ADR-010) | `mcp_server/tools/fs_tools.py` |
 | `fs_list` | `directory_path: str = ".", recursive: bool = False` | JSON `{directory, entries:[{path, type: dir\|file\|symlink\|other, size?}], truncated}`; dirs first; skips `EXCLUDED_DIRS` (`.git`, `.venv`, `__pycache__`, `node_modules`, `.agent-harness`, caches, `dist`, `build`, IDE dirs) at every depth; symlinks listed by name, not followed; cap 2000 entries | `mcp_server/tools/fs_tools.py` |
 | `fs_write` | `filepath, content: str` | creates or overwrites a UTF-8 file (≤ 1 MiB), `mkdir -p` parents, atomic write; refuses directories and excluded dirs; returns `created\|overwritten <path> (<n> bytes)` | `mcp_server/tools/fs_tools.py` |
 | `fs_apply_patch` | `filepath, search_string, replace_string: str` | replaces exactly one occurrence (0 or >1 → error, file untouched); atomic write | `mcp_server/tools/fs_tools.py` |
-| `run_tests` | `test_target: str` (`path[::selector]`) | runner auto-detect gradlew → npm → pytest; pytest runs as `<target>/.venv/bin/python -m pytest` — venv created with the harness interpreter if missing, `requirements.txt` installed (re-installed when its SHA-256 stamp in `.venv/.harness-requirements.sha256` changes), pytest installed if not importable; provisioning errors → `ToolError` with stderr; 600 s test timeout (300 s venv, 900 s pip); JSON `{runner, python, env_actions, exit_code, timed_out, stdout, stderr}` (ADR-009) | `mcp_server/tools/test_tools.py` |
-| `git_commit_feature` | `message, spec_id: str` | validates Conventional Commits, header `… [spec_id]`, stages `-A` excluding `CLAUDE.md`, `prompts-hist/`, `.agent-harness/`, `.venv/`, `__pycache__/`; no co-author trailers; on success touches `.agent-harness/run_successful` (ADR-008) | `mcp_server/tools/git_tools.py` |
+| `run_tests` | `test_target: str` (`path[::selector]`), `timeout_seconds: int = 60` (1–600) | runner auto-detect gradlew → npm → pytest; pytest runs as `<target>/.venv/bin/python -m pytest` — venv created with the harness interpreter if missing, `requirements.txt` installed (re-installed when its SHA-256 stamp in `.venv/.harness-requirements.sha256` changes), pytest installed if not importable; provisioning errors → `ToolError` with stderr; test process killed after `timeout_seconds` with `timeout_message` + `[TIMEOUT]` stderr banner (ADR-010; provisioning: 300 s venv, 900 s pip); JSON `{runner, python, env_actions, timeout_seconds, exit_code, timed_out, timeout_message, stdout, stderr}` (ADR-009) | `mcp_server/tools/test_tools.py` |
+| `git_commit_feature` | `message, spec_id: str` | validates Conventional Commits, header `… [spec_id]`, stages `-A` excluding `CLAUDE.md`, `prompts-hist/`, `.agent-harness/`, `.venv/`, `__pycache__/`, `*.db`, `*.sqlite`, `*.sqlite3`, `*.db3` (ADR-010); no co-author trailers; on success touches `.agent-harness/run_successful` (ADR-008) | `mcp_server/tools/git_tools.py` |
 | `query_temporal_coupling` | `filepath: str, threshold_percent: int = 30 (0-100)` | JSON `{filepath, threshold_percent, coupled_files:[{filepath, coupling_percent}]}` via Jaccard query | `mcp_server/tools/graph_tools.py` |
 
 ## 6. Known Risks
 - Sandbox path checks are TOCTOU-prone with symlinks (single-user local tool; accepted).
 - `run_tests` bounds *which command* runs, not what the target's tests do; provisioning (`pip install`) is the one tool path with network egress (ADR-009).
 - `fs_write` can overwrite any non-excluded file, including tests; the target's test-lock convention is not enforced by the harness (ADR-007).
-- The `run_successful` marker means *a* commit happened, not that the spec is complete; a legitimate agent stop (reported conflict) is still retried up to `MAX_RETRIES` (ADR-008).
+- The `run_successful` marker means *a* commit happened, not that the spec is complete; a legitimate agent stop (reported conflict or ADR-010 stuck rule) is still retried up to `MAX_RETRIES` (ADR-008).
+- `Sandbox` rejects `[`/`]` as glob characters, so bracketed file names are unreachable through the tools (ADR-010).
 - Runner detection is heuristic (npm wins over pytest when both exist).
 - Self-healing re-index only triggers on `git log` failure; amended-but-unpruned history lingers (ADR-003).
 - `git commit` in the target needs a git identity reachable via the scrubbed env (`HOME` is passed through).
