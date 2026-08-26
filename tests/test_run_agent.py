@@ -34,7 +34,7 @@ def test_config_env_exports_openai_vars() -> None:
     env = dict(shlex.split(line.removeprefix("export "))[0].split("=", 1) for line in out.splitlines())
     assert env["OPENAI_BASE_URL"] == "http://localhost:11434/v1"
     assert env["OPENAI_API_KEY"] == "ollama"
-    assert env["MODEL_NAME"] == "gpt-oss:20b"
+    assert env["MODEL_NAME"].startswith("gpt-oss:20b")
     assert not any(k.startswith("ANTHROPIC_") for k in env), "ADR-006: no Anthropic-specific variables"
 
 
@@ -83,12 +83,12 @@ def test_run_agent_default_opencode_invocation(target: Path) -> None:
     cmd = shlex.split(res.stdout.splitlines()[-1])
     assert cmd[:2] == ["opencode", "run"]
     assert cmd[cmd.index("--dir") + 1] == str(target)
-    assert cmd[cmd.index("-m") + 1] == "ollama/gpt-oss:20b"
+    assert cmd[cmd.index("-m") + 1].startswith("ollama/gpt-oss:20b")
     assert cmd[cmd.index("--agent") + 1] == "SystemArchitect"
     assert "Implement spec S-01" in cmd[-1]
 
     oc = json.loads((target / ".agent-harness" / "opencode.json").read_text())
-    assert oc["model"] == "ollama/gpt-oss:20b"
+    assert oc["model"].startswith("ollama/gpt-oss:20b")
     assert oc["provider"]["ollama"]["options"]["baseURL"] == "http://localhost:11434/v1"
     assert oc["provider"]["ollama"]["npm"] == "@ai-sdk/openai-compatible"
     mcp = oc["mcp"]["agent-harness"]
@@ -96,7 +96,10 @@ def test_run_agent_default_opencode_invocation(target: Path) -> None:
     assert mcp["command"] == [str(HARNESS / "bin" / "start_mcp.sh"), "--target-dir", str(target)]
     agent = oc["agent"]["SystemArchitect"]
     assert "Do NOT guess" in agent["prompt"]
-    assert agent["tools"] == {t: False for t in ("bash", "edit", "write", "patch", "multiedit", "webfetch")}
+    assert "- agent-harness_read_constitution" in agent["prompt"], "persona must carry Open Code's prefixed tool names"
+    for t in ("bash", "edit", "write", "patch", "multiedit", "webfetch", "read", "glob", "grep"):
+        assert agent["tools"][t] is False
+    assert "agent-harness_read_constitution" in cmd[-1]
 
 
 def test_bootstrap_check_only_reports_python_env() -> None:

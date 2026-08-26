@@ -74,6 +74,13 @@ with open(e["MCP_CONFIG"], "w", encoding="utf-8") as fh:
     json.dump({"mcpServers": {"agent-harness": server}}, fh, indent=2); fh.write("\n")
 
 backend, model = e["LLM_BACKEND"], e["MODEL_NAME"]
+HARNESS_TOOLS = ("read_constitution", "read_specification", "fs_read", "fs_apply_patch",
+                 "run_tests", "git_commit_feature", "query_temporal_coupling")
+# Open Code exposes MCP tools as <server>_<tool>; local models call bare names otherwise.
+TOOL_NOTE = ("\n\nTool names in this session (use them EXACTLY as written, no other tools exist):\n"
+             + "\n".join(f"- agent-harness_{t}" for t in HARNESS_TOOLS)
+             + "\nThere is no tool for listing, scanning or opening directories; read files by path with agent-harness_fs_read.\n")
+BUILTIN_OFF = ("bash", "edit", "write", "patch", "multiedit", "webfetch", "read", "glob", "grep", "list", "task", "skill")
 opencode = {
     "$schema": "https://opencode.ai/config.json",
     "provider": {backend: {
@@ -92,8 +99,8 @@ opencode = {
         "description": "Agent Harness persona (config/roles.yaml)",
         "mode": "primary",
         "model": f"{backend}/{model}",
-        "prompt": e["SYSTEM_PROMPT"],
-        "tools": {t: False for t in ("bash", "edit", "write", "patch", "multiedit", "webfetch")},
+        "prompt": e["SYSTEM_PROMPT"] + TOOL_NOTE,
+        "tools": {t: False for t in BUILTIN_OFF},
     }},
 }
 with open(e["OPENCODE_CONFIG_FILE"], "w", encoding="utf-8") as fh:
@@ -108,6 +115,7 @@ export AGENT_SPEC_ID="$SPEC_ID" AGENT_TARGET_DIR="$TARGET_DIR" AGENT_MCP_CONFIG=
 AGENT_WORDS=($AGENT_CMD)
 if [ "$(basename "${AGENT_WORDS[0]}")" = "opencode" ]; then
   export OPENCODE_CONFIG="$OPENCODE_CONFIG_FILE"
+  PROMPT="Implement spec ${SPEC_ID}. Step 1: call agent-harness_read_constitution. Step 2: call agent-harness_read_specification with spec_id '${SPEC_ID}' (source: ${SPEC_FILE}). Then plan, implement, test and commit strictly through the agent-harness_* tools."
   CMD=("${AGENT_WORDS[@]}" run --dir "$TARGET_DIR" -m "$LLM_BACKEND/$MODEL_NAME" --agent "$ROLE_NAME" "$PROMPT")
 else
   CMD=("${AGENT_WORDS[@]}" --mcp-config "$MCP_CONFIG" --append-system-prompt "$SYSTEM_PROMPT" "$PROMPT")

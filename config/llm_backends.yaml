@@ -14,7 +14,7 @@ backends:
   ollama:
     provider: openai_compatible
     base_url: http://localhost:11434/v1
-    model: gpt-oss:20b
+    model: gpt-oss:20b-32k     # `ollama create gpt-oss:20b-32k -f Modelfile` with PARAMETER num_ctx 32768 (Ollama default 4096 truncates the agent context)
     api_key: ollama            # Ollama ignores the key but clients require one
     api_key_env: OLLAMA_API_KEY
     extra_env:
