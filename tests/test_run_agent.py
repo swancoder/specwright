@@ -34,7 +34,7 @@ def test_config_env_exports_openai_vars() -> None:
     env = dict(shlex.split(line.removeprefix("export "))[0].split("=", 1) for line in out.splitlines())
     assert env["OPENAI_BASE_URL"] == "http://localhost:11434/v1"
     assert env["OPENAI_API_KEY"] == "ollama"
-    assert env["MODEL_NAME"] == "qwen2.5-coder:14b-32k"
+    assert env["MODEL_NAME"] == "gpt-oss:20b-32k"
     assert not any(k.startswith("ANTHROPIC_") for k in env), "ADR-006: no Anthropic-specific variables"
 
 
@@ -74,7 +74,7 @@ def test_run_agent_dry_run_writes_mcp_json_and_command(target: Path) -> None:
     assert cmd[cmd.index("--mcp-config") + 1] == str(target / ".agent-harness" / "mcp.json")
     assert "SystemArchitect" in cmd[cmd.index("--append-system-prompt") + 1]
     assert "Implement spec S-01" in cmd[-1] and "specs/S-01/01_spec.md" in cmd[-1]
-    assert "backend=ollama" in res.stdout and "model=qwen2.5-coder:14b-32k" in res.stdout
+    assert "backend=ollama" in res.stdout and "model=gpt-oss:20b-32k" in res.stdout
 
 
 def test_run_agent_default_opencode_invocation(target: Path) -> None:
@@ -83,12 +83,12 @@ def test_run_agent_default_opencode_invocation(target: Path) -> None:
     cmd = shlex.split(res.stdout.splitlines()[-1])
     assert cmd[:2] == ["opencode", "run"]
     assert cmd[cmd.index("--dir") + 1] == str(target)
-    assert cmd[cmd.index("-m") + 1] == "ollama/qwen2.5-coder:14b-32k"
+    assert cmd[cmd.index("-m") + 1] == "ollama/gpt-oss:20b-32k"
     assert cmd[cmd.index("--agent") + 1] == "SystemArchitect"
     assert "Implement spec S-01" in cmd[-1]
 
     oc = json.loads((target / ".agent-harness" / "opencode.json").read_text())
-    assert oc["model"] == "ollama/qwen2.5-coder:14b-32k"
+    assert oc["model"] == "ollama/gpt-oss:20b-32k"
     assert oc["provider"]["ollama"]["options"]["baseURL"] == "http://localhost:11434/v1"
     assert oc["provider"]["ollama"]["npm"] == "@ai-sdk/openai-compatible"
     mcp = oc["mcp"]["agent-harness"]

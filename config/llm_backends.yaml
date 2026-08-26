@@ -14,8 +14,8 @@ backends:
   ollama:
     provider: openai_compatible
     base_url: http://localhost:11434/v1
-    model: qwen2.5-coder:14b-32k   # `ollama create qwen2.5-coder:14b-32k -f Modelfile` with PARAMETER num_ctx 32768 (Ollama default 4096 truncates the agent context)
-    # alternatives: gpt-oss:20b-32k (drops tool calls into text intermittently), qwen2.5-coder:14b (4k ctx — too small)
+    model: gpt-oss:20b-32k     # `ollama create gpt-oss:20b-32k -f Modelfile` with PARAMETER num_ctx 32768 (Ollama default 4096 truncates the agent context)
+    # NOT usable: qwen2.5-coder:14b(-32k) — emits tool calls as bare JSON text without <tool_call> tags, Ollama never returns tool_calls
     api_key: ollama            # Ollama ignores the key but clients require one
     api_key_env: OLLAMA_API_KEY
     extra_env:
