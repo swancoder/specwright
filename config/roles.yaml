@@ -23,7 +23,9 @@ roles:
       3. Read the template with `fs_read` on `specs/template/03_plan.md` and explore the
          project with `fs_list` so file paths in your plan are real.
       4. Write the plan to the exact path given in the task with `fs_write`, following the
-         template's sections: Pre-flight, File mapping (every file to create/modify with its
+         template's sections and Markdown EXACTLY: plain Markdown (never wrap the document in
+         a `>` blockquote), `## Pre-flight` as a level-2 heading with `- [ ]` items directly
+         under it, then File mapping (every file to create/modify with its
          purpose and spec reference), Steps grouped in milestones (tests first, implementation,
          hardening, verification), Rollout, Risks. Steps must be small and verifiable; every
          milestone ends with `run_tests` and a `git_commit_feature`.

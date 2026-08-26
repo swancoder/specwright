@@ -70,6 +70,17 @@ def test_check_states(target: Path) -> None:
     assert code == 0 and "4 pre-flight items ticked" in msg, "checkboxes after the section must be ignored"
 
 
+def test_tolerates_blockquote_and_bold_heading(target: Path) -> None:
+    plan = target / "specs" / "001-feedback-widget" / "03_plan.md"
+    quoted = "\n".join("> " + l for l in APPROVED.splitlines()) + "\n"
+    assert plan_gate.check_plan(plan.write_text(quoted) and plan or plan)[0] == 0
+    bold = APPROVED.replace("## Pre-flight", "**Pre‑flight**:")  # bold, unicode hyphen
+    plan.write_text(bold)
+    assert plan_gate.check_plan(plan)[0] == 0
+    plan.write_text(bold.replace("- [x] Branch created.", "- [ ] Branch created."))
+    assert plan_gate.check_plan(plan)[0] == 4
+
+
 def test_cli(target: Path, capsys: pytest.CaptureFixture[str]) -> None:
     plan = target / "specs" / "001-feedback-widget" / "03_plan.md"
     assert plan_gate.main(["locate", "--target-dir", str(target), "--spec", "001"]) == 0

@@ -14,7 +14,8 @@ import sys
 from pathlib import Path
 
 PLAN_NAME = "03_plan.md"
-PREFLIGHT_HEADING = re.compile(r"^##\s+pre-flight\s*$", re.IGNORECASE)
+# "## Pre-flight" (any heading level) or a bold "**Pre-flight**" line; ASCII or Unicode hyphen.
+PREFLIGHT_HEADING = re.compile(r"^(?:#{1,6}\s+|\*\*)pre[-\u2010\u2011\u2013]flight(?:\s+checklist)?\**:?\s*$", re.IGNORECASE)
 HEADING = re.compile(r"^#{1,6}\s")
 CHECKBOX = re.compile(r"^\s*[-*]\s+\[( |x|X)\]\s*(.*)$")
 
@@ -38,13 +39,14 @@ def locate_plan(target_dir: Path, spec_id: str) -> Path:
 
 def preflight_items(text: str) -> list[tuple[bool, str]] | None:
     """Return ``[(ticked, label), ...]`` from the Pre-flight section, or None if there is none."""
-    lines = text.splitlines()
-    start = next((i for i, l in enumerate(lines) if PREFLIGHT_HEADING.match(l)), None)
+    # Tolerate a blockquote prefix on every line (a Planner formatting slip seen in run 10).
+    lines = [re.sub(r"^>\s?", "", l) for l in text.splitlines()]
+    start = next((i for i, l in enumerate(lines) if PREFLIGHT_HEADING.match(l.strip())), None)
     if start is None:
         return None
     items: list[tuple[bool, str]] = []
     for line in lines[start + 1:]:
-        if HEADING.match(line):
+        if HEADING.match(line) or line.strip().startswith("**") and line.strip().endswith(("**", "**:")):
             break
         m = CHECKBOX.match(line)
         if m:
