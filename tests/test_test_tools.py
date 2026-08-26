@@ -154,3 +154,51 @@ def test_cli_provisions_target(sb: Sandbox, target: Path, monkeypatch: pytest.Mo
     assert "created .venv" in out and "installed requirements.txt" in out
     assert test_tools.main(["--target-dir", str(target)]) == 0
     assert "up to date" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- ADR-010: timeout
+
+
+def test_default_timeout_is_60s_and_passed_to_sandbox(sb: Sandbox, target: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[float] = []
+    fake = FakeRun(sb)
+
+    def run(self, argv, *, timeout=0):
+        if "-m" in argv and "pytest" in argv and "pip" not in argv:
+            seen.append(timeout)
+        return fake(argv, timeout=timeout)
+
+    monkeypatch.setattr(Sandbox, "run", run)
+    report = json.loads(test_tools.run_tests(sb, "tests/test_x.py"))
+    assert seen == [60.0] and report["timeout_seconds"] == 60 and report["timeout_message"] is None
+    seen.clear()
+    json.loads(test_tools.run_tests(sb, "tests/test_x.py", timeout_seconds=5))
+    assert seen == [5.0]
+    with pytest.raises(ToolError, match="between 1 and 600"):
+        test_tools.run_tests(sb, "tests/test_x.py", timeout_seconds=601)
+
+
+def test_timeout_is_reported_explicitly(sb: Sandbox, target: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeRun(sb)
+
+    def run(self, argv, *, timeout=0):
+        if "-m" in argv and "pytest" in argv and "pip" not in argv:
+            return CommandResult(argv=list(argv), exit_code=-1, stdout="partial", stderr="\n[timed out after 3s]", timed_out=True)
+        return fake(argv, timeout=timeout)
+
+    monkeypatch.setattr(Sandbox, "run", run)
+    report = json.loads(test_tools.run_tests(sb, "tests/test_x.py", timeout_seconds=3))
+    assert report["timed_out"] is True and report["exit_code"] == -1
+    assert report["timeout_message"].startswith("run_tests killed after 3s")
+    assert report["stderr"].startswith("[TIMEOUT] run_tests killed after 3s")
+    assert "raise timeout_seconds (max 600)" in report["timeout_message"]
+
+
+def test_real_timeout_kills_hung_suite(tmp_path: Path) -> None:
+    """End-to-end: a genuinely hanging test is killed by the enforced timeout."""
+    (tmp_path / ".venv").symlink_to(Path(sys.executable).parent.parent)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_hang.py").write_text("import time\n\ndef test_hang():\n    time.sleep(30)\n")
+    sb = Sandbox(tmp_path)
+    report = json.loads(test_tools.run_tests(sb, "tests/test_hang.py", timeout_seconds=2))
+    assert report["timed_out"] is True and "[TIMEOUT]" in report["stderr"]

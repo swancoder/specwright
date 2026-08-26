@@ -98,3 +98,16 @@ def test_target_venv_and_pycache_are_never_staged(sb: Sandbox, repo: Path) -> No
     tracked = git(repo, "ls-files").split()
     assert "src/e.py" in tracked
     assert not any(p.startswith(".venv") or "__pycache__" in p for p in tracked)
+
+
+def test_sqlite_state_files_are_never_staged(sb: Sandbox, repo: Path) -> None:
+    for name in ("feedback.db", "state.sqlite", "cache.sqlite3", "old.db3"):
+        (repo / name).write_bytes(b"\x00")
+    (repo / "data").mkdir()
+    (repo / "data" / "nested.db").write_bytes(b"\x00")
+    (repo / "src" / "f.py").write_text("f\n")
+    (repo / "src" / "schema.py").write_text("DDL = 'x'\n")  # a .py mentioning db is fine
+    assert git_tools.git_commit_feature(sb, "feat: f", "001").startswith("committed ")
+    tracked = git(repo, "ls-files").split()
+    assert "src/f.py" in tracked and "src/schema.py" in tracked
+    assert not any(p.endswith((".db", ".sqlite", ".sqlite3", ".db3")) for p in tracked), tracked

@@ -34,7 +34,10 @@ roles:
          over an existing file you have not read in this session.
       6. Verify with `run_tests` after every meaningful change. Never claim tests pass
          without a `run_tests` result showing exit code 0.
-      7. Commit only with `git_commit_feature`, using a Conventional Commits message.
+      7. Commit only with `git_commit_feature`, using a Conventional Commits message —
+         and commit at EVERY green milestone of the plan (tests for that milestone pass),
+         not only when the whole specification is done. Banked progress survives a
+         restart; uncommitted progress does not.
 
       Strict prohibitions:
       - Do NOT guess file contents, APIs, signatures, versions or dependencies.
@@ -50,6 +53,14 @@ roles:
       - Do NOT edit, run or commit anything by any means other than the MCP tools above.
       - Do NOT touch `.agent-harness/`, `CLAUDE.md` or `prompts-hist/` in the target.
       - Do NOT add "Co-authored-by" trailers or mention AI authorship in commits.
+
+      Stuck rule (honesty over heroics):
+      - If the same test still fails after 3 genuine fix attempts (for example a framework
+        quirk you cannot resolve), STOP. Write a short final message that states exactly
+        which test fails, the verbatim error, what you tried, and what a human should decide.
+      - Never hallucinate fake packages, never make random syntax changes hoping one sticks,
+        and never describe work as "committed" or "done" unless `git_commit_feature`
+        returned `committed …` in this session.
 
       If a required tool call fails or the specification is ambiguous, stop and report
       the exact problem instead of working around it.

@@ -38,6 +38,8 @@ class ReadSpecificationArgs(ToolArgs):
 
 class FsReadArgs(ToolArgs):
     filepath: str = Field(description="Path relative to the target codebase root.")
+    start_line: int | None = Field(default=None, ge=1, description="First line to return (1-indexed, inclusive). Omit for whole file.")
+    end_line: int | None = Field(default=None, ge=1, description="Last line to return (1-indexed, inclusive; clamped to EOF).")
 
 
 class FsListArgs(ToolArgs):
@@ -134,13 +136,32 @@ def read_specification(sandbox: Sandbox, spec_id: str) -> str:
     return "\n\n".join(sections)
 
 
-def fs_read(sandbox: Sandbox, filepath: str) -> str:
-    """Read a UTF-8 text file inside the target codebase.
+def fs_read(sandbox: Sandbox, filepath: str, start_line: int | None = None, end_line: int | None = None) -> str:
+    """Read a UTF-8 text file inside the target codebase, optionally a line range.
 
     Args:
         filepath: Path relative to the target codebase root.
+        start_line: First line (1-indexed, inclusive); defaults to 1.
+        end_line: Last line (1-indexed, inclusive); defaults to EOF, clamped to EOF.
+
+    A sliced result is prefixed with ``# <path>: lines a-b of N`` (ADR-010).
     """
-    return _read_text(sandbox, filepath)
+    text = _read_text(sandbox, filepath)
+    if start_line is None and end_line is None:
+        return text
+    if (start_line is not None and start_line < 1) or (end_line is not None and end_line < 1):
+        raise ToolError("start_line and end_line must be >= 1")
+    lines = text.splitlines(keepends=True)
+    total = len(lines)
+    start = start_line if start_line is not None else 1
+    end = end_line if end_line is not None else total
+    if start > end:
+        raise ToolError(f"start_line ({start}) must not exceed end_line ({end})")
+    if start > total:
+        raise ToolError(f"start_line ({start}) is beyond the end of {filepath!r} ({total} lines)")
+    end = min(end, total)
+    body = "".join(lines[start - 1:end])
+    return f"# {filepath}: lines {start}-{end} of {total}\n{body}"
 
 
 def fs_apply_patch(sandbox: Sandbox, filepath: str, search_string: str, replace_string: str) -> str:
@@ -263,9 +284,10 @@ def build_tools(ctx: HarnessContext) -> list[ToolSpec]:
         ),
         ToolSpec(
             "fs_read",
-            "Read a UTF-8 text file inside the target codebase (repository-relative path).",
+            "Read a UTF-8 text file inside the target codebase (repository-relative path); "
+            "optional start_line/end_line (1-indexed, inclusive) return only that slice.",
             FsReadArgs,
-            lambda a: fs_read(sb, a.filepath),  # type: ignore[attr-defined]
+            lambda a: fs_read(sb, a.filepath, a.start_line, a.end_line),  # type: ignore[attr-defined]
         ),
         ToolSpec(
             "fs_list",

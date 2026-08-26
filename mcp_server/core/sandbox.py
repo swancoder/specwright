@@ -18,6 +18,8 @@ ENV_ALLOWLIST: Final[tuple[str, ...]] = (
 )
 
 _WINDOWS_ABS: Final[re.Pattern[str]] = re.compile(r"^(?:[A-Za-z]:|\\\\|//)")
+#: Glob metacharacters; paths must be exact (ADR-010).
+GLOB_CHARS: Final[frozenset[str]] = frozenset("*?[]")
 
 
 class SandboxViolation(ToolError):
@@ -49,14 +51,16 @@ class Sandbox:
         """Return the absolute path for ``relpath`` if it stays inside the sandbox.
 
         Raises:
-            SandboxViolation: empty/absolute path, ``..`` segment, or a symlink that
-                resolves outside the target root.
+            SandboxViolation: empty/absolute path, ``..`` segment, glob characters
+                (``* ? [ ]``), or a symlink that resolves outside the target root.
         """
         candidate = relpath.replace("\\", "/").strip()
         if not candidate:
             raise SandboxViolation("empty path")
         if candidate.startswith("/") or _WINDOWS_ABS.match(candidate):
             raise SandboxViolation(f"absolute paths are not allowed: {relpath!r}")
+        if GLOB_CHARS & set(candidate):
+            raise SandboxViolation(f"glob characters are not allowed; give an exact path: {relpath!r}")
         if any(part == ".." for part in PurePosixPath(candidate).parts):
             raise SandboxViolation(f"path traversal is not allowed: {relpath!r}")
 

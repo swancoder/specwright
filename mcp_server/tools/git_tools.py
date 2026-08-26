@@ -31,6 +31,11 @@ LOCAL_ONLY_PATHSPECS: Final[tuple[str, ...]] = (
     ":!.venv/**",
     ":!**/__pycache__",
     ":!**/__pycache__/**",
+    # local SQLite state (ADR-010)
+    ":!*.db", ":!**/*.db",
+    ":!*.sqlite", ":!**/*.sqlite",
+    ":!*.sqlite3", ":!**/*.sqlite3",
+    ":!*.db3", ":!**/*.db3",
 )
 
 

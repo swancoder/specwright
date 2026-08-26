@@ -164,3 +164,67 @@ def test_tools_registered_with_strict_schemas(target: Path) -> None:
         assert not res.is_error and '"new"' in res.content[0].text
     finally:
         ctx.close()
+
+
+# ---------------------------------------------------------------- ADR-010: fs_read line ranges
+
+
+@pytest.fixture
+def numbered(target: Path) -> Path:
+    f = target / "src" / "big.py"
+    f.write_text("".join(f"line {i}\n" for i in range(1, 11)))
+    return f
+
+
+def test_fs_read_whole_file_unchanged_without_range(sb: Sandbox, numbered: Path) -> None:
+    out = fs_tools.fs_read(sb, "src/big.py")
+    assert out.startswith("line 1\n") and not out.startswith("#")
+
+
+def test_fs_read_slice_with_header(sb: Sandbox, numbered: Path) -> None:
+    assert fs_tools.fs_read(sb, "src/big.py", 3, 5) == "# src/big.py: lines 3-5 of 10\nline 3\nline 4\nline 5\n"
+    assert fs_tools.fs_read(sb, "src/big.py", start_line=9) == "# src/big.py: lines 9-10 of 10\nline 9\nline 10\n"
+    assert fs_tools.fs_read(sb, "src/big.py", end_line=2) == "# src/big.py: lines 1-2 of 10\nline 1\nline 2\n"
+    assert fs_tools.fs_read(sb, "src/big.py", 8, 500).endswith("lines 8-10 of 10\nline 8\nline 9\nline 10\n"), "end clamped to EOF"
+
+
+def test_fs_read_range_validation(sb: Sandbox, numbered: Path) -> None:
+    with pytest.raises(ToolError, match="must not exceed"):
+        fs_tools.fs_read(sb, "src/big.py", 5, 3)
+    with pytest.raises(ToolError, match="beyond the end"):
+        fs_tools.fs_read(sb, "src/big.py", 11, 12)
+    with pytest.raises(ToolError, match=">= 1"):
+        fs_tools.fs_read(sb, "src/big.py", 0, 3)
+
+
+def test_fs_read_range_via_registry_schema(target: Path, numbered: Path) -> None:
+    from mcp_server.core.context import HarnessContext
+    from mcp_server.main import build_registry
+
+    ctx = HarnessContext.for_target(target)
+    try:
+        reg = build_registry(ctx)
+        schema = reg.get("fs_read").to_mcp_tool().input_schema
+        assert {"start_line", "end_line"} <= set(schema["properties"])
+        res = reg.call_tool_result("fs_read", {"filepath": "src/big.py", "start_line": 2, "end_line": 2})
+        assert not res.is_error and res.content[0].text == "# src/big.py: lines 2-2 of 10\nline 2\n"
+        res = reg.call_tool_result("fs_read", {"filepath": "src/big.py", "start_line": 0})
+        assert res.is_error
+    finally:
+        ctx.close()
+
+
+# ---------------------------------------------------------------- ADR-010: glob rejection
+
+
+@pytest.mark.parametrize("bad", ["src/???", "src/*.py", "src/[ab].py", "*", "tests/?", "src/app.py?"])
+def test_glob_characters_rejected_by_every_path_tool(sb: Sandbox, target: Path, bad: str) -> None:
+    with pytest.raises(SandboxViolation, match="glob characters"):
+        fs_tools.fs_read(sb, bad)
+    with pytest.raises(SandboxViolation, match="glob characters"):
+        fs_tools.fs_write(sb, bad, "x")
+    with pytest.raises(SandboxViolation, match="glob characters"):
+        fs_tools.fs_apply_patch(sb, bad, "a", "b")
+    with pytest.raises(SandboxViolation, match="glob characters"):
+        fs_tools.fs_list(sb, bad)
+    assert not (target / "src" / "???").exists()

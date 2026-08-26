@@ -15,7 +15,8 @@ from mcp_server.core.context import HarnessContext
 from mcp_server.core.registry import ToolArgs, ToolError, ToolSpec
 from mcp_server.core.sandbox import Sandbox
 
-TEST_TIMEOUT_SECONDS: Final[float] = 600.0
+DEFAULT_TEST_TIMEOUT_SECONDS: Final[int] = 60
+MAX_TEST_TIMEOUT_SECONDS: Final[int] = 600
 VENV_CREATE_TIMEOUT_SECONDS: Final[float] = 300.0
 PIP_TIMEOUT_SECONDS: Final[float] = 900.0
 MAX_OUTPUT_CHARS: Final[int] = 20_000
@@ -28,6 +29,12 @@ class RunTestsArgs(ToolArgs):
     test_target: str = Field(
         min_length=1,
         description="Repository-relative test path, optionally with a '::' selector (e.g. tests/test_x.py::test_y).",
+    )
+    timeout_seconds: int = Field(
+        default=DEFAULT_TEST_TIMEOUT_SECONDS,
+        ge=1,
+        le=MAX_TEST_TIMEOUT_SECONDS,
+        description=f"Kill the test run after this many seconds (default {DEFAULT_TEST_TIMEOUT_SECONDS}, max {MAX_TEST_TIMEOUT_SECONDS}).",
     )
 
 
@@ -123,16 +130,21 @@ def detect_runner(sandbox: Sandbox, test_target: str) -> tuple[str, list[str]]:
     return "pytest", [str(target_python(sandbox)), "-m", "pytest", test_target, "-q"]
 
 
-def run_tests(sandbox: Sandbox, test_target: str) -> str:
+def run_tests(sandbox: Sandbox, test_target: str, timeout_seconds: int = DEFAULT_TEST_TIMEOUT_SECONDS) -> str:
     """Run the target's test suite (or a subset) in the target's environment; JSON report.
 
     Args:
         test_target: Repository-relative path, optionally followed by ``::selector``.
             The path part must exist inside the sandbox.
+        timeout_seconds: Hard wall-clock limit; the process is killed when it expires
+            (default 60, max 600). A timeout is reported explicitly (ADR-010).
 
     Returns:
-        JSON: ``{"runner", "python", "env_actions", "exit_code", "timed_out", "stdout", "stderr"}``.
+        JSON: ``{"runner", "python", "env_actions", "timeout_seconds", "exit_code",
+        "timed_out", "timeout_message", "stdout", "stderr"}``.
     """
+    if not 1 <= timeout_seconds <= MAX_TEST_TIMEOUT_SECONDS:
+        raise ToolError(f"timeout_seconds must be between 1 and {MAX_TEST_TIMEOUT_SECONDS}")
     path_part = test_target.split("::", 1)[0]
     resolved = sandbox.resolve(path_part, must_exist=True)
     normalized = sandbox.relative(resolved) + test_target[len(path_part):]
@@ -143,16 +155,27 @@ def run_tests(sandbox: Sandbox, test_target: str) -> str:
         py, actions = ensure_target_env(sandbox)
         # lexical, not resolved: a symlinked .venv must not be reported (or rejected) by its target
         python_used = py.relative_to(sandbox.root).as_posix()
-    result = sandbox.run(argv, timeout=TEST_TIMEOUT_SECONDS)
+    result = sandbox.run(argv, timeout=float(timeout_seconds))
+    timeout_message: str | None = None
+    stderr = result.stderr
+    if result.timed_out:
+        timeout_message = (
+            f"run_tests killed after {timeout_seconds}s (timeout_seconds={timeout_seconds}). "
+            "The suite did not finish: look for a hang or an infinite loop, run a smaller "
+            f"test_target, or raise timeout_seconds (max {MAX_TEST_TIMEOUT_SECONDS})."
+        )
+        stderr = f"[TIMEOUT] {timeout_message}\n{stderr}"
     return json.dumps(
         {
             "runner": runner,
             "python": python_used,
             "env_actions": actions,
+            "timeout_seconds": timeout_seconds,
             "exit_code": result.exit_code,
             "timed_out": result.timed_out,
+            "timeout_message": timeout_message,
             "stdout": _truncate(result.stdout),
-            "stderr": _truncate(result.stderr),
+            "stderr": _truncate(stderr),
         },
         indent=2,
     )
@@ -166,9 +189,10 @@ def build_tools(ctx: HarnessContext) -> list[ToolSpec]:
             "run_tests",
             "Run the target project's tests (pytest in the target's own .venv — created and "
             "requirements.txt installed automatically — or gradlew / npm) for a repository-relative "
-            "target; returns exit code, stdout and stderr as JSON.",
+            "target; returns exit code, stdout and stderr as JSON. Killed after timeout_seconds "
+            f"(default {DEFAULT_TEST_TIMEOUT_SECONDS}); a timeout is reported in timeout_message.",
             RunTestsArgs,
-            lambda a: run_tests(sb, a.test_target),  # type: ignore[attr-defined]
+            lambda a: run_tests(sb, a.test_target, a.timeout_seconds),  # type: ignore[attr-defined]
         ),
     ]
 
