@@ -27,6 +27,10 @@ LOCAL_ONLY_PATHSPECS: Final[tuple[str, ...]] = (
     ":!prompts-hist/**",
     ":!.agent-harness",
     ":!.agent-harness/**",
+    ":!.venv",
+    ":!.venv/**",
+    ":!**/__pycache__",
+    ":!**/__pycache__/**",
 )
 
 

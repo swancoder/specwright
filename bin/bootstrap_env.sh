@@ -107,7 +107,7 @@ if [ -n "$TARGET_DIR" ]; then
   elif [ "$CHECK_ONLY" -eq 1 ]; then
     if [ -x "$TARGET_DIR/.venv/bin/python" ]; then ok "target .venv present"; else miss "target .venv — run ./bin/bootstrap_env.sh --target-dir $TARGET_DIR"; fi
   else
-    if OUT="$(PYTHONPATH="$HARNESS_DIR" "$VPY" -m mcp_server.tools.test_tools --target-dir "$TARGET_DIR" 2>&1)"; then
+    if OUT="$(PYTHONPATH="$HARNESS_DIR" "$VPY" -c 'import sys; from mcp_server.tools.test_tools import main; sys.exit(main(sys.argv[1:]))' --target-dir "$TARGET_DIR" 2>&1)"; then
       printf '%s\n' "$OUT" | sed 's/^/  /'; ok "target .venv provisioned"
     else
       printf '%s\n' "$OUT" | sed 's/^/  /'; miss "target provisioning failed (see above)"

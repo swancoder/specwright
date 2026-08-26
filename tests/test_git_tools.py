@@ -86,3 +86,15 @@ def test_tool_only_writes_marker_after_commit_via_registry(repo: Path) -> None:
         assert not res.is_error and marker(repo).exists()
     finally:
         ctx.close()
+
+
+def test_target_venv_and_pycache_are_never_staged(sb: Sandbox, repo: Path) -> None:
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").write_text("")
+    (repo / "src" / "__pycache__").mkdir()
+    (repo / "src" / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"\x00")
+    (repo / "src" / "e.py").write_text("e\n")
+    assert git_tools.git_commit_feature(sb, "feat: e", "001").startswith("committed ")
+    tracked = git(repo, "ls-files").split()
+    assert "src/e.py" in tracked
+    assert not any(p.startswith(".venv") or "__pycache__" in p for p in tracked)
