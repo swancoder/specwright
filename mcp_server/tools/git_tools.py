@@ -18,6 +18,10 @@ SPEC_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 #: Empty file the supervisor loop in bin/run_agent.sh polls for (ADR-008). Written only
 #: after a successful commit; lives under the never-staged .agent-harness/ directory.
 RUN_SUCCESSFUL_MARKER: Final[str] = ".agent-harness/run_successful"
+#: Written by the Verifier via mark_spec_complete; the supervisor's success condition (ADR-012).
+SPEC_COMPLETE_MARKER: Final[str] = ".agent-harness/spec_complete"
+#: Name of the capability-gated completion tool (registered only with --enable-tool).
+MARK_SPEC_COMPLETE_TOOL: Final[str] = "mark_spec_complete"
 
 #: Paths the agent must never stage in a target repo (internal engineering notes and
 #: harness state), regardless of the target's .gitignore.
@@ -37,6 +41,10 @@ LOCAL_ONLY_PATHSPECS: Final[tuple[str, ...]] = (
     ":!*.sqlite3", ":!**/*.sqlite3",
     ":!*.db3", ":!**/*.db3",
 )
+
+
+class MarkSpecCompleteArgs(ToolArgs):
+    """No arguments."""
 
 
 class GitCommitFeatureArgs(ToolArgs):
@@ -75,6 +83,14 @@ def write_marker(sandbox: Sandbox) -> None:
     marker.touch()
 
 
+def mark_spec_complete(sandbox: Sandbox) -> str:
+    """Create ``.agent-harness/spec_complete`` — the Verifier's signal that the spec is met (ADR-012)."""
+    marker = sandbox.resolve(SPEC_COMPLETE_MARKER)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    return f"spec marked complete: {SPEC_COMPLETE_MARKER}"
+
+
 def git_commit_feature(sandbox: Sandbox, message: str, spec_id: str) -> str:
     """Stage all changes (except local-only files) and commit in the target repository.
 
@@ -105,7 +121,7 @@ def git_commit_feature(sandbox: Sandbox, message: str, spec_id: str) -> str:
 def build_tools(ctx: HarnessContext) -> list[ToolSpec]:
     """Tool specs for this module."""
     sb = ctx.sandbox
-    return [
+    specs = [
         ToolSpec(
             "git_commit_feature",
             "Stage all changes in the target repo (internal notes excluded) and commit with a "
@@ -114,3 +130,12 @@ def build_tools(ctx: HarnessContext) -> list[ToolSpec]:
             lambda a: git_commit_feature(sb, a.message, a.spec_id),  # type: ignore[attr-defined]
         ),
     ]
+    if MARK_SPEC_COMPLETE_TOOL in ctx.optional_tools:  # Verifier only (ADR-012)
+        specs.append(ToolSpec(
+            MARK_SPEC_COMPLETE_TOOL,
+            "Mark the specification COMPLETE: call this only when every spec requirement is "
+            "implemented and all tests pass. Writes .agent-harness/spec_complete.",
+            MarkSpecCompleteArgs,
+            lambda a: mark_spec_complete(sb),
+        ))
+    return specs

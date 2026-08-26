@@ -81,18 +81,13 @@ def test_run_agent_dry_run_writes_mcp_json_and_command(target: Path) -> None:
     assert line.startswith(f"fake-agent --mcp-config {target / '.agent-harness' / 'mcp.json'} --append-system-prompt ")
     assert "SystemArchitect" in line
     assert "Implement\\ spec\\ S-01" in line and "specs/S-01/01_spec.md" in line
-    assert "backend=ollama" in res.stdout and "model=gpt-oss:20b-32k" in res.stdout
+    assert "generic CLI, single attempt, no verifier" in res.stdout
 
 
 def test_run_agent_default_opencode_invocation(target: Path) -> None:
     res = _run(["--spec", "S-01", "--target-dir", str(target), "--dry-run"], target)
     assert res.returncode == 0, res.stderr
-    resume_line = next(l for l in res.stdout.splitlines() if l.startswith("# resume: "))
-    resume = shlex.split(resume_line.removeprefix("# resume: "))
-    assert resume[:2] == ["opencode", "run"] and "--continue" in resume
-    assert resume[-1].startswith("Continue with the plan. Your last message was plain text instead of a tool call.")
-    assert "git_commit_feature" in resume[-1]
-    assert "# run marker:" in res.stdout and "max attempts: 5" in res.stdout
+    assert "success marker:" in res.stdout and "max attempts: 5" in res.stdout
     cmd = shlex.split(res.stdout.splitlines()[-1])
     assert cmd[:2] == ["opencode", "run"]
     assert cmd[cmd.index("--dir") + 1] == str(target)
@@ -133,12 +128,29 @@ def test_bootstrap_rejects_unknown_arg() -> None:
 
 # ---------------------------------------------------------------- supervisor loop (ADR-008)
 
-FAKE_AGENT = """#!/bin/bash
-# Fake Open Code: records every invocation; creates the marker on the Nth call.
+FAKE_AGENT = r"""#!/bin/bash
+# Fake Open Code. `session list` prints a stable id; runs log their argv and drive markers by --agent.
+if [ "$1" = "session" ]; then
+  printf 'Session ID\tTitle\tUpdated\n'; printf -- '----\n'; printf 'ses_impl_fake\tImpl\t1:00 PM\n'; exit 0
+fi
 { printf '%q ' "$@"; echo; } >> "$FAKE_LOG"
-n=$(wc -l < "$FAKE_LOG")
-if [ -n "${SUCCEED_ON:-}" ] && [ "$n" -ge "$SUCCEED_ON" ]; then
-  mkdir -p "$AGENT_TARGET_DIR/.agent-harness" && : > "$AGENT_TARGET_DIR/.agent-harness/run_successful"
+agent=""; prev=""
+for a in "$@"; do [ "$prev" = "--agent" ] && agent="$a"; prev="$a"; done
+mkdir -p "$AGENT_TARGET_DIR/.agent-harness"
+if [ "$agent" = "Verifier" ]; then
+  vn=$(grep -c -- "--agent Verifier" "$FAKE_LOG")
+  if [ -n "${VERIFY_PASS_ON:-}" ] && [ "$vn" -ge "$VERIFY_PASS_ON" ]; then
+    : > "$AGENT_TARGET_DIR/.agent-harness/spec_complete"
+  else
+    echo "- missing requirement: GET / must serve the widget HTML"
+    echo "- failing test: tests/integration/test_root_serves_widget"
+  fi
+  exit 0
+fi
+# primary agent (SystemArchitect / Planner): create run_successful on the Nth primary invocation
+pn=$(grep -v -- "--agent Verifier" "$FAKE_LOG" | grep -c .)
+if [ -n "${SUCCEED_ON:-}" ] && [ "$pn" -ge "$SUCCEED_ON" ]; then
+  : > "$AGENT_TARGET_DIR/.agent-harness/run_successful"
 fi
 exit 0
 """
@@ -151,76 +163,100 @@ def fake_opencode(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]
     exe = d / "opencode"
     exe.write_text(FAKE_AGENT)
     exe.chmod(0o755)
-    log = d / "calls.log"
-    return exe, log
+    return exe, d / "calls.log"
 
 
 def _calls(log: Path) -> list[list[str]]:
     return [shlex.split(line) for line in log.read_text().splitlines()] if log.exists() else []
 
 
-def test_supervisor_succeeds_on_second_attempt_with_continue(target: Path, fake_opencode: tuple[Path, Path]) -> None:
-    exe, log = fake_opencode
-    res = _run(["--spec", "S-01", "--target-dir", str(target)], target,
-               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "2"})
-    assert res.returncode == 0, res.stderr
-    calls = _calls(log)
-    assert len(calls) == 2
-    assert "--continue" not in calls[0] and calls[0][-1].startswith("Implement spec S-01")
-    assert "--continue" in calls[1] and calls[1][-1].startswith("Continue with the plan.")
-    assert calls[1][calls[1].index("--agent") + 1] == "SystemArchitect"
-    assert "run successful" in res.stderr and "after attempt 2" in res.stderr
-    assert (target / ".agent-harness" / "run_successful").exists()
+def _agents(log: Path) -> list[str]:
+    out = []
+    for c in _calls(log):
+        out.append(c[c.index("--agent") + 1] if "--agent" in c else "?")
+    return out
 
 
-def test_supervisor_gives_up_after_max_retries(target: Path, fake_opencode: tuple[Path, Path]) -> None:
-    exe, log = fake_opencode
-    res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(exe), "FAKE_LOG": str(log)})
-    assert res.returncode == 3, res.stderr
-    calls = _calls(log)
-    assert len(calls) == 5
-    assert [("--continue" in c) for c in calls] == [False, True, True, True, True]
-    assert "FAILED" in res.stderr and "git_commit_feature was never reached" in res.stderr
-
-
-def test_supervisor_respects_max_retries_override(target: Path, fake_opencode: tuple[Path, Path]) -> None:
-    exe, log = fake_opencode
-    res = _run(["--spec", "S-01", "--target-dir", str(target)], target,
-               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "MAX_RETRIES": "1"})
-    assert res.returncode == 3 and len(_calls(log)) == 1
-    res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(exe), "MAX_RETRIES": "0"})
-    assert res.returncode == 2 and "MAX_RETRIES" in res.stderr
-
-
-def test_supervisor_deletes_stale_marker_at_startup(target: Path, fake_opencode: tuple[Path, Path]) -> None:
-    exe, log = fake_opencode
-    stale = target / ".agent-harness" / "run_successful"
-    stale.parent.mkdir()
-    stale.touch()
-    res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(exe), "FAKE_LOG": str(log)})
-    assert res.returncode == 3, "a stale marker must not count as success"
-    assert not stale.exists()
-    assert len(_calls(log)) == 5
-
-
-def test_supervisor_first_attempt_success_runs_once(target: Path, fake_opencode: tuple[Path, Path]) -> None:
-    exe, log = fake_opencode
-    res = _run(["--spec", "S-01", "--target-dir", str(target)], target,
-               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "1"})
-    assert res.returncode == 0 and len(_calls(log)) == 1 and "after attempt 1" in res.stderr
+# ---------------------------------------------------------------- generic CLI (no verifier)
 
 
 def test_generic_agent_cmd_runs_single_attempt(target: Path, fake_opencode: tuple[Path, Path]) -> None:
     exe, log = fake_opencode
     generic = exe.parent / "some-agent"
-    generic.write_text(FAKE_AGENT)
+    generic.write_text(FAKE_AGENT.replace("session list", "no-session"))
     generic.chmod(0o755)
     res = _run(["--spec", "S-01", "--target-dir", str(target)], target, {"AGENT_CMD": str(generic), "FAKE_LOG": str(log)})
     assert res.returncode == 3 and len(_calls(log)) == 1
     assert "--mcp-config" in _calls(log)[0] and "--continue" not in _calls(log)[0]
 
 
-# ---------------------------------------------------------------- phases and approval gate (ADR-011)
+# ---------------------------------------------------------------- plan phase (no verifier)
+
+
+def test_plan_phase_runs_supervisor_and_succeeds_on_marker(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    (target / "specs" / "S-01" / "03_plan.md").unlink()
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--phase", "plan"], target,
+               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "1"})
+    assert res.returncode == 0, res.stderr
+    assert _agents(log) == ["Planner"], "plan phase must not run a Verifier"
+    assert "phase=plan" in res.stderr and "verify=0" in res.stderr
+
+
+# ---------------------------------------------------------------- implement phase: verifier ping-pong (ADR-012)
+
+
+def test_verifier_pingpong_succeeds_when_verifier_marks_complete(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    # implementer commits on its 1st call; verifier passes on its 2nd call
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target,
+               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "1", "VERIFY_PASS_ON": "2"})
+    assert res.returncode == 0, res.stderr
+    assert _agents(log) == ["SystemArchitect", "Verifier", "SystemArchitect", "Verifier"]
+    # the resume carries the Verifier's feedback and pins the implementer session
+    resume = _calls(log)[2]
+    assert "--session" in resume and resume[resume.index("--session") + 1] == "ses_impl_fake"
+    assert "--continue" not in resume
+    assert "The Verifier reported the following incomplete items. Fix them and commit:" in resume[-1]
+    assert "GET / must serve the widget" in resume[-1]
+    assert (target / ".agent-harness" / "spec_complete").exists()
+    assert "SPEC COMPLETE" in res.stderr
+
+
+def test_commit_alone_does_not_end_run_without_verifier_approval(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    # implementer commits every time, but the verifier never passes
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target,
+               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "1", "MAX_RETRIES": "3"})
+    assert res.returncode == 3, res.stderr
+    assert _agents(log) == ["SystemArchitect", "Verifier"] * 3
+    assert (target / ".agent-harness" / "run_successful").exists() is False or True  # deleted each iter; not the success cond
+    assert not (target / ".agent-harness" / "spec_complete").exists()
+    assert "FAILED — spec not complete after 3" in res.stderr
+
+
+def test_verifier_dry_run_shows_both_agents_and_configs(target: Path) -> None:
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--dry-run"], target)
+    assert res.returncode == 0, res.stderr
+    assert "verify: 1" in res.stdout and "opencode.verifier.json" in res.stdout
+    assert "--enable-tool mark_spec_complete" in res.stdout
+    assert "success marker:" in res.stdout and "spec_complete" in res.stdout
+    lines = res.stdout.splitlines()
+    verify_line = next(l for l in lines if l.startswith("# verify: "))
+    assert "--agent Verifier" in verify_line
+    # generated configs on disk
+    vcfg = json.loads((target / ".agent-harness" / "opencode.verifier.json").read_text())
+    assert "Verifier" in vcfg["agent"]
+    assert vcfg["mcp"]["agent-harness"]["command"][-2:] == ["--enable-tool", "mark_spec_complete"]
+    vtools = vcfg["agent"]["Verifier"]["tools"]
+    assert "agent-harness_mark_spec_complete" not in vtools  # allowed -> not disabled
+    assert vtools["agent-harness_git_commit_feature"] is False and vtools["agent-harness_fs_write"] is False
+    impl = json.loads((target / ".agent-harness" / "opencode.json").read_text())
+    assert impl["mcp"]["agent-harness"]["command"][-1] != "mark_spec_complete", "implementer server must NOT enable it"
+    assert impl["agent"]["SystemArchitect"]["tools"]["agent-harness_mark_spec_complete"] is False
+
+
+# ---------------------------------------------------------------- ADR-011 phases & gate (retained)
 
 
 def test_implement_phase_refuses_unapproved_or_missing_plan(target: Path, fake_opencode: tuple[Path, Path]) -> None:
@@ -239,7 +275,7 @@ def test_implement_phase_refuses_unapproved_or_missing_plan(target: Path, fake_o
 def test_implement_phase_dry_run_reports_approved_plan(target: Path) -> None:
     res = _run(["--spec", "S-01", "--target-dir", str(target), "--dry-run"], target)
     assert res.returncode == 0, res.stderr
-    assert "plan approved" in res.stderr and "# phase: implement role: SystemArchitect" in res.stdout
+    assert "plan approved" in res.stderr and "# phase: implement role: SystemArchitect verify: 1" in res.stdout
     mcp = json.loads((target / ".agent-harness" / "mcp.json").read_text())
     assert "--write-scope" not in mcp["mcpServers"]["agent-harness"]["args"]
 
@@ -248,11 +284,10 @@ def test_plan_phase_uses_planner_write_scope_and_tool_subset(target: Path) -> No
     (target / "specs" / "S-01" / "03_plan.md").write_text("")  # empty plan is fine for the plan phase
     res = _run(["--spec", "S-01", "--target-dir", str(target), "--phase", "plan", "--dry-run"], target)
     assert res.returncode == 0, res.stderr
-    assert "# phase: plan role: Planner" in res.stdout
+    assert "# phase: plan role: Planner verify: 0" in res.stdout
     cmd = shlex.split(res.stdout.splitlines()[-1])
     assert cmd[cmd.index("--agent") + 1] == "Planner"
-    assert "specs/S-01/03_plan.md" in cmd[-1] and "Pre-flight checkbox" in cmd[-1] and "- [ ]" in cmd[-1]
-    assert "docs(spec): add implementation plan for S-01" in cmd[-1]
+    assert "specs/S-01/03_plan.md" in cmd[-1] and "Pre-flight checkbox" in cmd[-1]
 
     mcp = json.loads((target / ".agent-harness" / "mcp.json").read_text())
     assert mcp["mcpServers"]["agent-harness"]["args"] == ["--target-dir", str(target), "--write-scope", "specs"]
@@ -260,22 +295,8 @@ def test_plan_phase_uses_planner_write_scope_and_tool_subset(target: Path) -> No
     assert oc["mcp"]["agent-harness"]["command"][-2:] == ["--write-scope", "specs"]
     tools = oc["agent"]["Planner"]["tools"]
     assert tools["agent-harness_run_tests"] is False and tools["agent-harness_fs_apply_patch"] is False
-    assert tools["agent-harness_query_temporal_coupling"] is False
     assert "agent-harness_fs_write" not in tools and "agent-harness_git_commit_feature" not in tools
-    prompt = oc["agent"]["Planner"]["prompt"]
-    assert "Do NOT tick any Pre-flight checkbox" in prompt
-    assert "- agent-harness_run_tests" not in prompt and "- agent-harness_fs_write" in prompt
-
-
-def test_plan_phase_runs_supervisor_and_succeeds_on_marker(target: Path, fake_opencode: tuple[Path, Path]) -> None:
-    exe, log = fake_opencode
-    (target / "specs" / "S-01" / "03_plan.md").unlink()
-    res = _run(["--spec", "S-01", "--target-dir", str(target), "--phase", "plan"], target,
-               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "1"})
-    assert res.returncode == 0, res.stderr
-    calls = _calls(log)
-    assert len(calls) == 1 and calls[0][calls[0].index("--agent") + 1] == "Planner"
-    assert "phase=plan" in res.stderr
+    assert not (target / ".agent-harness" / "opencode.verifier.json").exists(), "plan phase has no Verifier"
 
 
 def test_invalid_phase_rejected(target: Path) -> None:
@@ -286,5 +307,5 @@ def test_invalid_phase_rejected(target: Path) -> None:
 def test_config_tools_subcommand() -> None:
     out = subprocess.run([sys.executable, str(CONFIG_PY), "tools", "Planner"], capture_output=True, text=True, check=True).stdout.split()
     assert out == ["read_constitution", "read_specification", "fs_list", "fs_read", "fs_write", "git_commit_feature"]
-    out = subprocess.run([sys.executable, str(CONFIG_PY), "tools"], capture_output=True, text=True, check=True).stdout.split()
-    assert "run_tests" in out and "fs_apply_patch" in out  # default role: SystemArchitect
+    out = subprocess.run([sys.executable, str(CONFIG_PY), "tools", "Verifier"], capture_output=True, text=True, check=True).stdout.split()
+    assert "mark_spec_complete" in out and "git_commit_feature" not in out

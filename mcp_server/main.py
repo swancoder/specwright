@@ -42,9 +42,9 @@ def build_server(registry: ToolRegistry) -> Server:
     )
 
 
-async def serve(target_dir: Path, db_path: Path | None = None, write_scopes: tuple[str, ...] = ()) -> None:
+async def serve(target_dir: Path, db_path: Path | None = None, write_scopes: tuple[str, ...] = (), optional_tools: tuple[str, ...] = ()) -> None:
     """Run the MCP server on stdio until the client disconnects."""
-    ctx = HarnessContext.for_target(target_dir, db_path, write_scopes)
+    ctx = HarnessContext.for_target(target_dir, db_path, write_scopes, frozenset(optional_tools))
     try:
         server = build_server(build_registry(ctx))
         async with stdio_server() as (read_stream, write_stream):
@@ -62,6 +62,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--write-scope", action="append", default=[], metavar="PREFIX",
         help="repo-relative directory the agent may write under (repeatable; default: unrestricted) [ADR-011]",
     )
+    ap.add_argument(
+        "--enable-tool", action="append", default=[], metavar="NAME",
+        help="register a capability-gated tool (e.g. mark_spec_complete); repeatable [ADR-012]",
+    )
     return ap.parse_args(argv)
 
 
@@ -71,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.target_dir.is_dir():
         print(f"error: --target-dir {args.target_dir} is not a directory", file=sys.stderr)
         return 2
-    anyio.run(serve, args.target_dir, args.db, tuple(args.write_scope))
+    anyio.run(serve, args.target_dir, args.db, tuple(args.write_scope), tuple(args.enable_tool))
     return 0
 
 

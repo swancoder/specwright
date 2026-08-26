@@ -22,11 +22,14 @@ class HarnessContext:
         sandbox: Path/process confinement for ``target_dir`` (ADR-001).
         write_scopes: Repo-relative directory prefixes the agent may write under; empty
             means unrestricted (ADR-011).
+        optional_tools: Names of capability-gated tools to register (e.g. mark_spec_complete);
+            empty means none beyond the always-on set (ADR-012).
     """
 
     target_dir: Path
     db: DatabaseManager
     write_scopes: tuple[str, ...] = ()
+    optional_tools: frozenset[str] = frozenset()
     sandbox: Sandbox = field(init=False)
 
     def __post_init__(self) -> None:
@@ -39,12 +42,13 @@ class HarnessContext:
         target_dir: Path | str,
         db_path: Path | str | None = None,
         write_scopes: tuple[str, ...] | list[str] = (),
+        optional_tools: frozenset[str] | list[str] = frozenset(),
     ) -> HarnessContext:
         """Build a context for ``target_dir``, opening (or creating) its graph DB."""
         root = Path(target_dir).resolve()
         db = DatabaseManager(db_path if db_path is not None else root / DEFAULT_DB_RELPATH)
         db.connect()
-        return cls(target_dir=root, db=db, write_scopes=tuple(write_scopes))
+        return cls(target_dir=root, db=db, write_scopes=tuple(write_scopes), optional_tools=frozenset(optional_tools))
 
     def allows_write(self, relpath: str) -> bool:
         """True if ``relpath`` (POSIX, repo-relative) is inside a write scope (or none are set)."""

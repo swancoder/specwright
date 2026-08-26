@@ -99,124 +99,122 @@ ROLE_TOOLS="$("$PYTHON" "$HARNESS_DIR/bin/harness_config.py" tools "$ROLE_NAME" 
 WRITE_SCOPE_ARGS=()
 [ "$PHASE" = "plan" ] && WRITE_SCOPE_ARGS=(--write-scope specs)
 
-# --- 2. MCP wiring: <target>/.agent-harness/{mcp.json,opencode.json} ----------
+# --- 2. MCP wiring: <target>/.agent-harness/{mcp.json,opencode.json[,opencode.verifier.json]} ----------
 HARNESS_STATE="$TARGET_DIR/.agent-harness"
 MCP_CONFIG="$HARNESS_STATE/mcp.json"
 OPENCODE_CONFIG_FILE="$HARNESS_STATE/opencode.json"
+VERIFIER_CONFIG_FILE="$HARNESS_STATE/opencode.verifier.json"
+VERIFIER_ROLE="Verifier"
 mkdir -p "$HARNESS_STATE"
-HARNESS_DIR="$HARNESS_DIR" TARGET_DIR="$TARGET_DIR" MCP_CONFIG="$MCP_CONFIG" \
-OPENCODE_CONFIG_FILE="$OPENCODE_CONFIG_FILE" ROLE_NAME="$ROLE_NAME" SYSTEM_PROMPT="$SYSTEM_PROMPT" \
-ROLE_TOOLS="$ROLE_TOOLS" WRITE_SCOPES="${WRITE_SCOPE_ARGS[*]:-}" \
-"$PYTHON" - <<'PY'
-import json, os
-e = os.environ
-server = {
-    "command": os.path.join(e["HARNESS_DIR"], "bin", "start_mcp.sh"),
-    "args": ["--target-dir", e["TARGET_DIR"], *e.get("WRITE_SCOPES", "").split()],
-    "env": {"PYTHON": e.get("PYTHON", "")},
-}
-with open(e["MCP_CONFIG"], "w", encoding="utf-8") as fh:
-    json.dump({"mcpServers": {"agent-harness": server}}, fh, indent=2); fh.write("\n")
 
-backend, model = e["LLM_BACKEND"], e["MODEL_NAME"]
-HARNESS_TOOLS = ("read_constitution", "read_specification", "fs_list", "fs_read", "fs_write",
-                 "fs_apply_patch", "run_tests", "git_commit_feature", "query_temporal_coupling")
-ALLOWED = set(e.get("ROLE_TOOLS", "").split()) or set(HARNESS_TOOLS)
-# Harness tools the role may not use are switched off in Open Code too (ADR-011).
-ROLE_OFF = tuple(f"agent-harness_{t}" for t in HARNESS_TOOLS if t not in ALLOWED)
-# Open Code exposes MCP tools as <server>_<tool>; local models call bare names otherwise.
-TOOL_NOTE = ("\n\nTool names in this session (use them EXACTLY as written, no other tools exist):\n"
-             + "\n".join(f"- agent-harness_{t}" for t in HARNESS_TOOLS if t in ALLOWED)
-             + "\nExplore with agent-harness_fs_list, read with agent-harness_fs_read, create with agent-harness_fs_write.\n")
-BUILTIN_OFF = ("bash", "edit", "write", "patch", "multiedit", "webfetch", "read", "glob", "grep", "list", "task", "skill")
-opencode = {
-    "$schema": "https://opencode.ai/config.json",
-    "provider": {backend: {
-        "npm": "@ai-sdk/openai-compatible",
-        "name": f"{backend} (agent-harness)",
-        "options": {"baseURL": e["OPENAI_BASE_URL"], "apiKey": e["OPENAI_API_KEY"] or "none"},
-        # Without an explicit limit Open Code assumes a 0-token context and compacts every turn.
-        "models": {model: {"name": model, "limit": {
-            "context": int(e.get("LLM_CONTEXT_LENGTH", "32768")),
-            "output": int(e.get("LLM_MAX_OUTPUT_TOKENS", "8192")),
-        }}},
-    }},
-    "model": f"{backend}/{model}",
-    "mcp": {"agent-harness": {
-        "type": "local", "enabled": True,
-        "command": [server["command"], *server["args"]],
-        "environment": {k: v for k, v in server["env"].items() if v},
-    }},
-    "agent": {e["ROLE_NAME"]: {
-        "description": "Agent Harness persona (config/roles.yaml)",
-        "mode": "primary",
-        "model": f"{backend}/{model}",
-        "prompt": e["SYSTEM_PROMPT"] + TOOL_NOTE,
-        "tools": {t: False for t in (*BUILTIN_OFF, *ROLE_OFF)},
-    }},
-}
-with open(e["OPENCODE_CONFIG_FILE"], "w", encoding="utf-8") as fh:
-    json.dump(opencode, fh, indent=2); fh.write("\n")
-PY
+# Primary persona config (+ mcp.json per the ADR-005 contract). Plan phase confines writes to specs/.
+GEN_SCOPE=()
+[ "$PHASE" = "plan" ] && GEN_SCOPE=(--write-scope specs)
+"$PYTHON" "$HARNESS_DIR/bin/gen_opencode_config.py" \
+  --target-dir "$TARGET_DIR" --role "$ROLE_NAME" \
+  --out-opencode "$OPENCODE_CONFIG_FILE" --out-mcp "$MCP_CONFIG" "${GEN_SCOPE[@]}"
 
-# --- 3. Supervisor loop: launch, check marker, resume (ADR-008) ---------------
-RUN_MARKER="$HARNESS_STATE/run_successful"
-rm -f "$RUN_MARKER"   # a stale marker from a previous run must never count
-
-if [ "$PHASE" = "plan" ]; then
-  PROMPT="Create the implementation plan for spec ${SPEC_ID}. Call read_constitution, then read_specification with spec_id '${SPEC_ID}', read specs/template/03_plan.md, explore with fs_list, then write the plan to '${PLAN_REL}' with fs_write (leave every Pre-flight checkbox unticked), commit it with git_commit_feature ('docs(spec): add implementation plan for ${SPEC_ID}'), and stop."
-else
-  PROMPT="Implement spec ${SPEC_ID}. Start by calling read_constitution, then read_specification with spec_id '${SPEC_ID}' (source: ${SPEC_FILE}). Plan, implement, test and commit strictly through the MCP tools."
+# Verifier config (implement phase + Open Code): its MCP server enables mark_spec_complete (ADR-012).
+VERIFY=0
+FIRST_WORD="$(set -- $AGENT_CMD; basename "$1")"
+if [ "$PHASE" = "implement" ] && [ "$FIRST_WORD" = "opencode" ]; then
+  "$PYTHON" "$HARNESS_DIR/bin/gen_opencode_config.py" \
+    --target-dir "$TARGET_DIR" --role "$VERIFIER_ROLE" \
+    --out-opencode "$VERIFIER_CONFIG_FILE" --enable-tool mark_spec_complete
+  VERIFY=1
 fi
+
+# --- 3. Supervisor loop with Verifier handoff (ADR-008, ADR-012) ---------------
+RUN_MARKER="$HARNESS_STATE/run_successful"
+SPEC_MARKER="$HARNESS_STATE/spec_complete"
+VERIFIER_OUT="$HARNESS_STATE/verifier_last.txt"
+rm -f "$RUN_MARKER" "$SPEC_MARKER"   # stale markers must never count
+
 RESUME_PROMPT="Continue with the plan. Your last message was plain text instead of a tool call. You must use the appropriate MCP tool to proceed, or call git_commit_feature if you are done."
 export AGENT_SPEC_ID="$SPEC_ID" AGENT_TARGET_DIR="$TARGET_DIR" AGENT_MCP_CONFIG="$MCP_CONFIG" AGENT_PHASE="$PHASE" AGENT_PLAN_FILE="$PLAN_FILE"
 
 # shellcheck disable=SC2206  # AGENT_CMD is intentionally word-split
 AGENT_WORDS=($AGENT_CMD)
 IS_OPENCODE=0
-if [ "$(basename "${AGENT_WORDS[0]}")" = "opencode" ]; then
-  IS_OPENCODE=1
-  export OPENCODE_CONFIG="$OPENCODE_CONFIG_FILE"
-  if [ "$PHASE" = "plan" ]; then
-    PROMPT="Create the implementation plan for spec ${SPEC_ID}. Step 1: call agent-harness_read_constitution. Step 2: call agent-harness_read_specification with spec_id '${SPEC_ID}'. Step 3: agent-harness_fs_read 'specs/template/03_plan.md' and agent-harness_fs_list '.' (recursive). Step 4: agent-harness_fs_write the complete plan to '${PLAN_REL}' — leave every Pre-flight checkbox as '- [ ]'. Step 5: agent-harness_git_commit_feature with message 'docs(spec): add implementation plan for ${SPEC_ID}' and spec_id '${SPEC_ID}'. Then stop with a one-paragraph summary and open questions."
-  else
-    PROMPT="Implement spec ${SPEC_ID}. Step 1: call agent-harness_read_constitution. Step 2: call agent-harness_read_specification with spec_id '${SPEC_ID}' (source: ${SPEC_FILE}). Then plan, implement, test and commit strictly through the agent-harness_* tools."
-  fi
-  CMD=("${AGENT_WORDS[@]}" run --dir "$TARGET_DIR" -m "$LLM_BACKEND/$MODEL_NAME" --agent "$ROLE_NAME" "$PROMPT")
-  RESUME_CMD=("${AGENT_WORDS[@]}" run --dir "$TARGET_DIR" -m "$LLM_BACKEND/$MODEL_NAME" --agent "$ROLE_NAME" --continue "$RESUME_PROMPT")
+[ "$(basename "${AGENT_WORDS[0]}")" = "opencode" ] && IS_OPENCODE=1
+
+if [ "$PHASE" = "plan" ]; then
+  PROMPT="Create the implementation plan for spec ${SPEC_ID}. Step 1: call agent-harness_read_constitution. Step 2: call agent-harness_read_specification with spec_id '${SPEC_ID}'. Step 3: agent-harness_fs_read 'specs/template/03_plan.md' and agent-harness_fs_list '.' (recursive). Step 4: agent-harness_fs_write the complete plan to '${PLAN_REL}' — leave every Pre-flight checkbox as '- [ ]'. Step 5: agent-harness_git_commit_feature with message 'docs(spec): add implementation plan for ${SPEC_ID}' and spec_id '${SPEC_ID}'. Then stop."
 else
+  PROMPT="Implement spec ${SPEC_ID}. Step 1: call agent-harness_read_constitution. Step 2: call agent-harness_read_specification with spec_id '${SPEC_ID}' (source: ${SPEC_FILE}). Then plan, implement, test and commit strictly through the agent-harness_* tools. Commit at every green milestone."
+fi
+VERIFIER_PROMPT="Verify specification ${SPEC_ID}. Call agent-harness_read_constitution, then agent-harness_read_specification with spec_id '${SPEC_ID}', read the plan and the source with agent-harness_fs_read/agent-harness_fs_list, and run agent-harness_run_tests on 'tests'. If EVERY requirement in the spec is implemented and all tests pass, call agent-harness_mark_spec_complete. Otherwise DO NOT call it — output a bulleted list of the missing requirements and failing tests."
+
+# Success marker: spec_complete when a Verifier runs, otherwise a commit is enough.
+SUCCESS_MARKER="$RUN_MARKER"
+[ "$VERIFY" -eq 1 ] && SUCCESS_MARKER="$SPEC_MARKER"
+
+# non-Open Code CLI: single generic attempt, no verifier (ADR-005 fallback)
+if [ "$IS_OPENCODE" -eq 0 ]; then
   CMD=("${AGENT_WORDS[@]}" --mcp-config "$MCP_CONFIG" --append-system-prompt "$SYSTEM_PROMPT" "$PROMPT")
-  RESUME_CMD=()
-  MAX_RETRIES=1   # no --continue semantics for a generic CLI: single attempt
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "# phase: $PHASE role: $ROLE_NAME (generic CLI, single attempt, no verifier)"
+    printf '%q ' "${CMD[@]}"; echo; exit 0
+  fi
+  echo "run_agent.sh: phase=$PHASE spec=$SPEC_ID agent=$ROLE_NAME target=$TARGET_DIR (generic, 1 attempt)" >&2
+  cd "$TARGET_DIR"; "${CMD[@]}" || true
+  [ -f "$RUN_MARKER" ] && { echo "run_agent.sh: run successful" >&2; exit 0; }
+  echo "run_agent.sh: FAILED — no run_successful marker" >&2; exit 3
 fi
 
+# Open Code path
+oc() { OPENCODE_CONFIG="$OPENCODE_CONFIG_FILE" "${AGENT_WORDS[@]}" run --dir "$TARGET_DIR" -m "$LLM_BACKEND/$MODEL_NAME" --agent "$ROLE_NAME" "$@"; }
+oc_verify() { OPENCODE_CONFIG="$VERIFIER_CONFIG_FILE" "${AGENT_WORDS[@]}" run --dir "$TARGET_DIR" -m "$LLM_BACKEND/$MODEL_NAME" --agent "$VERIFIER_ROLE" "$@"; }
+latest_session() { OPENCODE_CONFIG="$OPENCODE_CONFIG_FILE" "${AGENT_WORDS[@]}" session list 2>/dev/null | sed -n '3p' | awk '{print $1}'; }
+
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "# backend=$LLM_BACKEND provider=$LLM_PROVIDER model=$MODEL_NAME base_url=$OPENAI_BASE_URL"
-  echo "# mcp config: $MCP_CONFIG"
+  echo "# phase: $PHASE role: $ROLE_NAME verify: $VERIFY plan: $PLAN_FILE${GATE_MSG:+ ($GATE_MSG)}"
   echo "# opencode config: $OPENCODE_CONFIG_FILE"
-  echo "# phase: $PHASE role: $ROLE_NAME plan: $PLAN_FILE${GATE_MSG:+ ($GATE_MSG)}"
-  echo "# run marker: $RUN_MARKER (max attempts: $MAX_RETRIES)"
+  [ "$VERIFY" -eq 1 ] && echo "# verifier config: $VERIFIER_CONFIG_FILE (--enable-tool mark_spec_complete)"
+  echo "# success marker: $SUCCESS_MARKER (max attempts: $MAX_RETRIES)"
   echo "# cwd: $TARGET_DIR"
-  [ "$IS_OPENCODE" -eq 1 ] && { printf '# resume: '; printf '%q ' "${RESUME_CMD[@]}"; echo; }
-  printf '%q ' "${CMD[@]}"; echo
+  if [ "$VERIFY" -eq 1 ]; then printf '# verify: '; printf '%q ' "${AGENT_WORDS[@]}" run --dir "$TARGET_DIR" -m "$LLM_BACKEND/$MODEL_NAME" --agent "$VERIFIER_ROLE" "$VERIFIER_PROMPT"; echo; fi
+  printf '%q ' "${AGENT_WORDS[@]}" run --dir "$TARGET_DIR" -m "$LLM_BACKEND/$MODEL_NAME" --agent "$ROLE_NAME" "$PROMPT"; echo
   exit 0
 fi
 
-echo "run_agent.sh: phase=$PHASE spec=$SPEC_ID backend=$LLM_BACKEND model=$MODEL_NAME agent=$ROLE_NAME target=$TARGET_DIR max_attempts=$MAX_RETRIES" >&2
+echo "run_agent.sh: phase=$PHASE spec=$SPEC_ID backend=$LLM_BACKEND model=$MODEL_NAME agent=$ROLE_NAME verify=$VERIFY target=$TARGET_DIR max_attempts=$MAX_RETRIES" >&2
 cd "$TARGET_DIR"
+FEEDBACK=""
+IMPL_SESSION=""
 for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
+  rm -f "$RUN_MARKER"
   if [ "$attempt" -eq 1 ]; then
     echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — starting session" >&2
-    "${CMD[@]}" && rc=0 || rc=$?
+    oc "$PROMPT" && rc=0 || rc=$?
   else
-    echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — no run_successful marker, resuming session with --continue" >&2
-    "${RESUME_CMD[@]}" && rc=0 || rc=$?
+    if [ -n "$FEEDBACK" ]; then
+      RP="$(printf 'The Verifier reported the following incomplete items. Fix them and commit:\n%s' "$FEEDBACK")"
+    else
+      RP="$RESUME_PROMPT"
+    fi
+    SESS_ARGS=(--continue)
+    [ -n "$IMPL_SESSION" ] && SESS_ARGS=(--session "$IMPL_SESSION")
+    echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — resuming implementer (${SESS_ARGS[0]})" >&2
+    oc "${SESS_ARGS[@]}" "$RP" && rc=0 || rc=$?
   fi
-  echo "run_agent.sh: agent exited with code $rc" >&2
-  if [ -f "$RUN_MARKER" ]; then
-    echo "run_agent.sh: run successful (marker $RUN_MARKER after attempt $attempt)" >&2
+  echo "run_agent.sh: implementer exited with code $rc" >&2
+  [ -z "$IMPL_SESSION" ] && IMPL_SESSION="$(latest_session)"
+  [ -f "$RUN_MARKER" ] && echo "run_agent.sh: implementer committed this iteration" >&2
+
+  if [ "$VERIFY" -eq 0 ]; then
+    [ -f "$SUCCESS_MARKER" ] && { echo "run_agent.sh: run successful (marker $SUCCESS_MARKER after attempt $attempt)" >&2; exit 0; }
+    continue
+  fi
+
+  echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — running Verifier" >&2
+  oc_verify "$VERIFIER_PROMPT" >"$VERIFIER_OUT" 2>&1 || true
+  if [ -f "$SPEC_MARKER" ]; then
+    echo "run_agent.sh: SPEC COMPLETE (Verifier marked $SPEC_MARKER after attempt $attempt)" >&2
     exit 0
   fi
+  FEEDBACK="$(tail -c 4000 "$VERIFIER_OUT" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
+  echo "run_agent.sh: Verifier reported the spec is incomplete; feeding gaps back to the implementer" >&2
 done
-echo "run_agent.sh: FAILED — no run_successful marker after $MAX_RETRIES attempt(s); git_commit_feature was never reached" >&2
+echo "run_agent.sh: FAILED — spec not complete after $MAX_RETRIES attempt(s)" >&2
 exit 3
