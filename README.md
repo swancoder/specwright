@@ -28,6 +28,7 @@ pytest tests/
 - [x] Stage 4: MCP stdio server, 7 tools registered, `query_temporal_coupling` wired (ADR-004).
 - [x] Stage 5: all six tools implemented behind `mcp_server/core/sandbox.py` (ADR-001). Follow-ups: OS-level sandbox (container) for `run_tests`; configurable test runner override; `fs_write`/`fs_list` tools if the agent loop needs them.
 - [x] Stage 6: `bin/run_agent.sh` + `bin/harness_config.py`, `config/llm_backends.yaml` (ollama default), `config/roles.yaml` (SystemArchitect) (ADR-005). Follow-ups: pick the real agent CLI (Claude Code needs an Anthropic-protocol proxy in front of Ollama); `AGENT_CMD` override is the placeholder.
+- [x] Stage 8: `fs_list` (JSON, excludes `.git`/`.venv`/`__pycache__`/`node_modules`/`.agent-harness`…) and `fs_write` (atomic, creates parents) behind `Sandbox`; 9 tools total (ADR-007). Follow-ups: configurable exclusions; optional `.gitignore` awareness; test-lock convention on the harness side.
 - [x] Stage 7: `bin/bootstrap_env.sh`; Open Code is the agent CLI (`opencode run --agent SystemArchitect`, per-target `.agent-harness/opencode.json`); default model `gpt-oss:20b`; Anthropic env removed (ADR-006). Follow-ups: native Ollama adapter to separate gpt-oss reasoning; end-to-end run on a real spec.
 - [ ] Fill `docs/SPECS.md` sections marked _TODO_.
 - [ ] Rewrite the scaffold generator script later (deferred).
