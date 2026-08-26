@@ -1,2 +1,28 @@
-# LLM backend definitions (local model endpoints, model names, generation limits).
-backends: {}
+# LLM backend profiles (ADR-005). Selected by `run_agent.sh --backend <name>`;
+# `default` names the profile used when --backend is omitted.
+#
+# Fields per profile:
+#   provider     openai_compatible | anthropic   (protocol the endpoint speaks)
+#   base_url     endpoint root exported as OPENAI_BASE_URL / ANTHROPIC_BASE_URL
+#   model        exported as MODEL_NAME / ANTHROPIC_MODEL
+#   api_key      literal key/token; local servers usually accept any placeholder
+#   api_key_env  (optional) env var read at run time; overrides api_key when set
+#   extra_env    (optional) additional KEY: value pairs exported verbatim
+default: ollama
+
+backends:
+  ollama:
+    provider: openai_compatible
+    base_url: http://localhost:11434/v1
+    model: qwen2.5-coder:14b
+    api_key: ollama            # Ollama ignores the key but clients require one
+    api_key_env: OLLAMA_API_KEY
+    extra_env:
+      OLLAMA_HOST: http://localhost:11434
+
+  freetoken:
+    provider: openai_compatible
+    base_url: http://localhost:8080/v1
+    model: qwen3-coder
+    api_key: ""
+    api_key_env: FREETOKEN_API_KEY
