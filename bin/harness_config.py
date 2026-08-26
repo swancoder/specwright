@@ -63,6 +63,8 @@ def backend_env(name: str | None, environ: dict[str, str] | None = None) -> dict
         "OPENAI_BASE_URL": base_url,
         "OPENAI_API_KEY": api_key,
         "MODEL_NAME": str(be["model"]),
+        "LLM_CONTEXT_LENGTH": str(int(be.get("context_length") or 32768)),
+        "LLM_MAX_OUTPUT_TOKENS": str(int(be.get("max_output_tokens") or 8192)),
     }
     for k, v in (be.get("extra_env") or {}).items():
         env[str(k)] = str(v)

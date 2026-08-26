@@ -34,6 +34,7 @@ def test_config_env_exports_openai_vars() -> None:
     env = dict(shlex.split(line.removeprefix("export "))[0].split("=", 1) for line in out.splitlines())
     assert env["OPENAI_BASE_URL"] == "http://localhost:11434/v1"
     assert env["OPENAI_API_KEY"] == "ollama"
+    assert env["LLM_CONTEXT_LENGTH"] == "32768" and env["LLM_MAX_OUTPUT_TOKENS"] == "8192"
     assert env["MODEL_NAME"] == "gpt-oss:20b-32k"
     assert not any(k.startswith("ANTHROPIC_") for k in env), "ADR-006: no Anthropic-specific variables"
 
@@ -97,6 +98,8 @@ def test_run_agent_default_opencode_invocation(target: Path) -> None:
     assert oc["model"] == "ollama/gpt-oss:20b-32k"
     assert oc["provider"]["ollama"]["options"]["baseURL"] == "http://localhost:11434/v1"
     assert oc["provider"]["ollama"]["npm"] == "@ai-sdk/openai-compatible"
+    limit = oc["provider"]["ollama"]["models"]["gpt-oss:20b-32k"]["limit"]
+    assert limit == {"context": 32768, "output": 8192}, "missing limit => Open Code compacts every turn"
     mcp = oc["mcp"]["agent-harness"]
     assert mcp["type"] == "local"
     assert mcp["command"] == [str(HARNESS / "bin" / "start_mcp.sh"), "--target-dir", str(target)]

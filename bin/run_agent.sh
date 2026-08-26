@@ -93,7 +93,11 @@ opencode = {
         "npm": "@ai-sdk/openai-compatible",
         "name": f"{backend} (agent-harness)",
         "options": {"baseURL": e["OPENAI_BASE_URL"], "apiKey": e["OPENAI_API_KEY"] or "none"},
-        "models": {model: {"name": model}},
+        # Without an explicit limit Open Code assumes a 0-token context and compacts every turn.
+        "models": {model: {"name": model, "limit": {
+            "context": int(e.get("LLM_CONTEXT_LENGTH", "32768")),
+            "output": int(e.get("LLM_MAX_OUTPUT_TOKENS", "8192")),
+        }}},
     }},
     "model": f"{backend}/{model}",
     "mcp": {"agent-harness": {

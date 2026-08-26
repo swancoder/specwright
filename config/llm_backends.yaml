@@ -7,6 +7,9 @@
 #   model        exported as MODEL_NAME / ANTHROPIC_MODEL
 #   api_key      literal key/token; local servers usually accept any placeholder
 #   api_key_env  (optional) env var read at run time; overrides api_key when set
+#   context_length     (optional, default 32768) exported as LLM_CONTEXT_LENGTH; MUST match the model's num_ctx —
+#                      Open Code treats a model without a declared limit as 0 tokens and compacts after every turn
+#   max_output_tokens  (optional, default 8192) exported as LLM_MAX_OUTPUT_TOKENS
 #   extra_env    (optional) additional KEY: value pairs exported verbatim
 default: ollama
 
@@ -17,6 +20,8 @@ backends:
     model: gpt-oss:20b-32k     # `ollama create gpt-oss:20b-32k -f Modelfile` with PARAMETER num_ctx 32768 (Ollama default 4096 truncates the agent context)
     # NOT usable: qwen2.5-coder:14b(-32k) — emits tool calls as bare JSON text without <tool_call> tags, Ollama never returns tool_calls
     api_key: ollama            # Ollama ignores the key but clients require one
+    context_length: 32768      # = num_ctx of the *-32k variants
+    max_output_tokens: 8192
     api_key_env: OLLAMA_API_KEY
     extra_env:
       OLLAMA_HOST: http://localhost:11434

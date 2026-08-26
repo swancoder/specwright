@@ -38,6 +38,7 @@ The Agent Harness uses Open Code as the primary CLI agent and relies on a local 
   named after the role whose `prompt` is the `roles.yaml` system prompt with Open Code's
   built-in mutating tools (`bash`, `edit`, `write`, `patch`, `multiedit`, `webfetch`)
   disabled so the persona's "MCP tools only" rule is enforced, not just requested.
+- The generated provider model carries `limit: {context: <context_length>, output: <max_output_tokens>}` from the backend profile. Open Code resolves a missing limit to `0` (`limit?.context ?? 0`), which makes its overflow check fire on every turn and compact the transcript continuously — observed as an endless re-read loop in run 7.
 - Launch: `OPENCODE_CONFIG=<opencode.json> opencode run --dir <target> -m <backend>/<model>
   --agent <role> "<prompt>"`. `AGENT_CMD` defaults to `opencode`; setting it to anything else
   falls back to the generic ADR-005 invocation (`--mcp-config … --append-system-prompt …`).
