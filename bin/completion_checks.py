@@ -26,7 +26,13 @@ def _run(argv: list[str], cwd: Path, timeout: float = 900.0) -> subprocess.Compl
 
 
 def hermetic_build_and_test(target: Path) -> str | None:
-    """Fresh venv from requirements.txt + pytest in a clean CWD. Returns a gap line or None."""
+    """Fresh venv from requirements.txt, then pytest FROM the project root. Returns a gap line or None.
+
+    Dependency isolation comes from the throwaway venv (built only from requirements.txt); the working
+    directory stays the project root so the project's own pytest config (rootdir, ``pythonpath``) and
+    ``python -m``'s CWD-on-sys.path both resolve as they do for a normal ``pytest`` invocation — running
+    from a temp CWD would spuriously break every src-layout project (ADR-014).
+    """
     req = target / "requirements.txt"
     if not req.is_file():
         return None
@@ -39,14 +45,15 @@ def hermetic_build_and_test(target: Path) -> str | None:
         if pip.returncode != 0:
             return f"hermetic build FAILED: `pip install -r requirements.txt` errored — {pip.stderr.strip()[-300:]}"
         _run([str(py), "-m", "pip", "install", "-q", "pytest"], cwd=tmp)
-        run = _run([str(py), "-m", "pytest", "-q", str(target / "tests")], cwd=tmp)
+        before = {p.name for p in target.glob("*.db")} | {p.name for p in target.glob("*.sqlite*")}
+        run = _run([str(py), "-m", "pytest", "-q", "tests"], cwd=target)
         if run.returncode != 0:
             tail = (run.stdout + run.stderr).strip().splitlines()[-6:]
             return ("hermetic tests FAILED in a clean venv (a runtime dependency is likely missing "
-                    "from requirements.txt, or code writes to the CWD): " + " / ".join(tail))
-        leaked = [p.name for p in tmp.glob("*.db")] + [p.name for p in tmp.glob("*.sqlite*")]
+                    "from requirements.txt): " + " / ".join(tail))
+        leaked = ({p.name for p in target.glob("*.db")} | {p.name for p in target.glob("*.sqlite*")}) - before
         if leaked:
-            return f"isolation: tests wrote a database into the working directory ({', '.join(leaked)}) — the DB path is not configurable."
+            return f"isolation: tests wrote a database into the project directory ({', '.join(sorted(leaked))}) — the DB path is not configurable."
         return None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
