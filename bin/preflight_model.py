@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -70,10 +71,16 @@ def check_toolcall(base_url: str, model: str, api_key: str) -> tuple[bool, str]:
     msg = (data.get("choices") or [{}])[0].get("message", {})
     if msg.get("tool_calls"):
         return True, "toolcall: structured tool_calls returned ok"
-    content = (msg.get("content") or "")[:80].replace("\n", " ")
-    return False, (f"toolcall: model '{model}' did NOT return structured tool_calls "
-                   f"(content={content!r}). It emits tool calls as text — the agent loop will not work. "
-                   f"Use a model with reliable tool calling (e.g. gpt-oss:20b, qwen3, devstral).")
+    content = msg.get("content") or ""
+    # Hard-fail ONLY on the unrecoverable signature: a tool call emitted as TEXT (e.g. qwen2.5-coder
+    # returns {"name": "...", "arguments": ...} in content). An empty/other response is inconclusive
+    # (a bare probe under-elicits some models, e.g. gpt-oss, which tool-call fine in the real loop).
+    if re.search(r'\{\s*"name"\s*:\s*"[a-z_]+"', content) or re.search(r'"arguments"\s*:', content):
+        return False, (f"toolcall: model '{model}' emitted a tool call as TEXT instead of a structured "
+                       f"call — the agent loop will not work. Use a model with reliable tool calling "
+                       f"(e.g. gpt-oss:20b, qwen3, devstral).")
+    return None, (f"toolcall: inconclusive — no structured tool_calls from a bare probe "
+                  f"(content={content[:60]!r}). Not aborting; watch for dropped tool calls in the run.")
 
 
 def is_local(base_url: str) -> bool:
@@ -90,9 +97,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     ok_ctx, msg_ctx = check_context(base, model, declared)
     print(f"  [{'ok' if ok_ctx else 'WARN'}] {msg_ctx}", file=sys.stderr)
-    ok_tc, msg_tc = check_toolcall(base, model, key)
-    print(f"  [{'ok' if ok_tc else 'FAIL'}] {msg_tc}", file=sys.stderr)
-    if not ok_tc:
+    tc, msg_tc = check_toolcall(base, model, key)
+    label = "ok" if tc is True else ("WARN" if tc is None else "FAIL")
+    print(f"  [{label}] {msg_tc}", file=sys.stderr)
+    if tc is False:
         return TOOLCALL
     if not ok_ctx:
         return CONTEXT

@@ -12,6 +12,7 @@ with a Git-history-based temporal coupling knowledge graph (SQLite).
 ./bin/bootstrap_env.sh                       # venv + requirements; checks node/opencode/ollama/model
 ./bin/bootstrap_env.sh --target-dir <path>   # also pre-provision <target>/.venv from its requirements.txt
 ./bin/start_mcp.sh --target-dir <path>       # MCP server over stdio (+ SQLite graph)
+./bin/run_agent.sh --spec <spec_id> --target-dir <path> [--skip-preflight] [--no-completion-checks]
 ./bin/run_agent.sh --spec <spec_id> --target-dir <path> --phase plan   # Planner writes+commits specs/<id>/03_plan.md
 #   → human reviews the plan and ticks every '- [ ]' under '## Pre-flight'
 ./bin/run_agent.sh --spec <spec_id> --target-dir <path>                # implement→verify loop; succeeds only when the Verifier marks the spec complete
@@ -31,6 +32,7 @@ pytest tests/
 - [x] Stage 4: MCP stdio server, 7 tools registered, `query_temporal_coupling` wired (ADR-004).
 - [x] Stage 5: all six tools implemented behind `mcp_server/core/sandbox.py` (ADR-001). Follow-ups: OS-level sandbox (container) for `run_tests`; configurable test runner override; `fs_write`/`fs_list` tools if the agent loop needs them.
 - [x] Stage 6: `bin/run_agent.sh` + `bin/harness_config.py`, `config/llm_backends.yaml` (ollama default), `config/roles.yaml` (SystemArchitect) (ADR-005). Follow-ups: pick the real agent CLI (Claude Code needs an Anthropic-protocol proxy in front of Ollama); `AGENT_CMD` override is the placeholder.
+- [x] Stage 15: reliability hardening for weak local models (ADR-014) — model preflight (num_ctx + tool-calling probe, abort 6), dropped-tool-call recovery in the resume, tool-name + argument aliases (gated per role), mechanical completion gate (hermetic build + mypy/ruff before `spec_complete`), no-progress abort (7), shadow-dependency `fs_write` guard.
 - [x] Stage 14: Claude Code backend (`AGENT_CMD=claude`, `--model sonnet` default) runs the identical plan→approve→implement→verify loop via `claude -p --output-format json`; roles applied as `--append-system-prompt` + `--allowedTools mcp__agent-harness__*` with built-ins disallowed (MCP-only); implementer resumed with `--resume <session_id>` (ADR-013). Open Code/generic paths unchanged.
 - [x] Stage 13: implement phase is now an implementer→Verifier loop; success = `.agent-harness/spec_complete` (set by the read-only `Verifier` via the capability-gated `mark_spec_complete`, MCP `--enable-tool`), not the first commit; the Verifier's gap list feeds the next `--continue` (ADR-012). Follow-ups: second/stronger model for verification; `blocked` marker.
 - [x] Stage 12: `--phase plan|implement`; `Planner` persona; approval gate on `03_plan.md` pre-flight checkboxes (`bin/plan_gate.py`, exit 4/5); MCP `--write-scope` enforced in `fs_write`/`fs_apply_patch`; per-role tool exposure in Open Code (ADR-011). Follow-ups: `blocked` marker; branch creation as a harness step.

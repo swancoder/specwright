@@ -114,3 +114,23 @@ def test_preflight_skips_non_local(monkeypatch: pytest.MonkeyPatch, capsys: pyte
     assert pf.main([]) == 0
     assert "non-local" in capsys.readouterr().out
     assert pf.is_local("http://localhost:11434/v1") and not pf.is_local("https://api.anthropic.com")
+
+
+def test_preflight_toolcall_tristate(monkeypatch: pytest.MonkeyPatch) -> None:
+    pf = _load("preflight_model")
+    import urllib.request
+    def fake(kind):
+        def _open(req, timeout=0):
+            import io, json as _j
+            body = {"choices": [{"message": kind}]}
+            return io.BytesIO(_j.dumps(body).encode())
+        return _open
+    # structured tool_calls -> ok (True)
+    monkeypatch.setattr(urllib.request, "urlopen", fake({"tool_calls": [{"id": "1"}]}))
+    assert pf.check_toolcall("http://x/v1", "m", "")[0] is True
+    # tool call as TEXT -> hard fail (False)
+    monkeypatch.setattr(urllib.request, "urlopen", fake({"content": '{"name": "read_constitution", "arguments": {}}'}))
+    assert pf.check_toolcall("http://x/v1", "m", "")[0] is False
+    # empty/other -> inconclusive (None), never aborts
+    monkeypatch.setattr(urllib.request, "urlopen", fake({"content": ""}))
+    assert pf.check_toolcall("http://x/v1", "m", "")[0] is None
