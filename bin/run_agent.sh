@@ -335,7 +335,7 @@ for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
   rm -f "$RUN_MARKER"
   if [ "$attempt" -eq 1 ]; then
     echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — starting session" >&2
-    oc "$PROMPT" 2>&1 | tee "$LAST_IMPL"; rc=${PIPESTATUS[0]}
+    set +e; oc "$PROMPT" 2>&1 | tee "$LAST_IMPL"; rc=${PIPESTATUS[0]}; set -e
   else
     if [ -n "$FEEDBACK" ]; then
       RP="$(printf 'The Verifier reported the following incomplete items. Fix them and commit:\n%s' "$FEEDBACK")"
@@ -346,7 +346,7 @@ for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
     SESS_ARGS=(--continue)
     [ -n "$IMPL_SESSION" ] && SESS_ARGS=(--session "$IMPL_SESSION")
     echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — resuming implementer (${SESS_ARGS[0]})" >&2
-    oc "${SESS_ARGS[@]}" "$RP" 2>&1 | tee "$LAST_IMPL"; rc=${PIPESTATUS[0]}
+    set +e; oc "${SESS_ARGS[@]}" "$RP" 2>&1 | tee "$LAST_IMPL"; rc=${PIPESTATUS[0]}; set -e
   fi
   echo "run_agent.sh: implementer exited with code $rc" >&2
   [ -z "$IMPL_SESSION" ] && IMPL_SESSION="$(latest_session)"
