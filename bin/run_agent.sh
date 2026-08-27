@@ -36,6 +36,7 @@ ROLE=""
 PHASE="implement"
 SKIP_GATE=0
 DRY_RUN=0
+MODEL_OVERRIDE=""
 
 usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -52,6 +53,8 @@ while [ $# -gt 0 ]; do
     --phase)       PHASE="${2:-}"; shift 2 ;;
     --phase=*)     PHASE="${1#*=}"; shift ;;
     --skip-plan-gate) SKIP_GATE=1; shift ;;
+    --model)       MODEL_OVERRIDE="${2:-}"; shift 2 ;;
+    --model=*)     MODEL_OVERRIDE="${1#*=}"; shift ;;
     --dry-run)     DRY_RUN=1; shift ;;
     -h|--help)     usage 0 ;;
     *) echo "run_agent.sh: unknown argument '$1'" >&2; usage 2 ;;
@@ -114,14 +117,47 @@ GEN_SCOPE=()
   --target-dir "$TARGET_DIR" --role "$ROLE_NAME" \
   --out-opencode "$OPENCODE_CONFIG_FILE" --out-mcp "$MCP_CONFIG" "${GEN_SCOPE[@]}"
 
-# Verifier config (implement phase + Open Code): its MCP server enables mark_spec_complete (ADR-012).
+# Backend detection: opencode | claude | generic (ADR-013). Open Code path unchanged.
+# shellcheck disable=SC2206
+AGENT_WORDS=($AGENT_CMD)
+case "$(basename "${AGENT_WORDS[0]}")" in
+  opencode) BACKEND_KIND=opencode ;;
+  claude)   BACKEND_KIND=claude ;;
+  *)        BACKEND_KIND=generic ;;
+esac
 VERIFY=0
-FIRST_WORD="$(set -- $AGENT_CMD; basename "$1")"
-if [ "$PHASE" = "implement" ] && [ "$FIRST_WORD" = "opencode" ]; then
+[ "$PHASE" = "implement" ] && [ "$BACKEND_KIND" != "generic" ] && VERIFY=1
+
+MCP_VERIFIER_CONFIG="$HARNESS_STATE/mcp.verifier.json"
+CC_MODEL="${MODEL_OVERRIDE:-${CC_MODEL:-sonnet}}"
+CC_DISALLOW="Bash,Edit,MultiEdit,Write,NotebookEdit,Read,Glob,Grep,WebFetch,WebSearch,Task,TodoWrite,BashOutput,KillShell"
+
+if [ "$BACKEND_KIND" = "opencode" ] && [ "$VERIFY" -eq 1 ]; then
   "$PYTHON" "$HARNESS_DIR/bin/gen_opencode_config.py" \
     --target-dir "$TARGET_DIR" --role "$VERIFIER_ROLE" \
     --out-opencode "$VERIFIER_CONFIG_FILE" --enable-tool mark_spec_complete
-  VERIFY=1
+fi
+
+if [ "$BACKEND_KIND" = "claude" ]; then
+  # Claude Code reads mcp.json directly; write implementer (+plan write-scope) and verifier (+enable-tool).
+  _write_mcp() {  # $1=outfile  $2=extra server args (space-separated)
+    OUT="$1" EXTRA="$2" HARNESS_DIR="$HARNESS_DIR" TARGET_DIR="$TARGET_DIR" PYTHON="$PYTHON" "$PYTHON" - <<'PYW'
+import json, os
+e = os.environ
+srv = {"command": os.path.join(e["HARNESS_DIR"], "bin", "start_mcp.sh"),
+       "args": ["--target-dir", e["TARGET_DIR"], *e.get("EXTRA", "").split()],
+       "env": {"PYTHON": e.get("PYTHON", "")}}
+with open(e["OUT"], "w", encoding="utf-8") as fh:
+    json.dump({"mcpServers": {"agent-harness": srv}}, fh, indent=2); fh.write("\n")
+PYW
+  }
+  CC_SCOPE=""; [ "$PHASE" = "plan" ] && CC_SCOPE="--write-scope specs"
+  _write_mcp "$MCP_CONFIG" "$CC_SCOPE"
+  [ "$VERIFY" -eq 1 ] && _write_mcp "$MCP_VERIFIER_CONFIG" "--enable-tool mark_spec_complete"
+  # role tool allowlists as comma-joined mcp__agent-harness__<tool>
+  ROLE_TOOLS_MCP="$(printf '%s\n' $ROLE_TOOLS | sed 's/^/mcp__agent-harness__/' | paste -sd, -)"
+  VERIFIER_SYS="$("$PYTHON" "$HARNESS_DIR/bin/harness_config.py" role "$VERIFIER_ROLE")"
+  VERIFIER_TOOLS_MCP="$("$PYTHON" "$HARNESS_DIR/bin/harness_config.py" tools "$VERIFIER_ROLE" | sed 's/^/mcp__agent-harness__/' | paste -sd, -)"
 fi
 
 # --- 3. Supervisor loop with Verifier handoff (ADR-008, ADR-012) ---------------
@@ -133,10 +169,8 @@ rm -f "$RUN_MARKER" "$SPEC_MARKER"   # stale markers must never count
 RESUME_PROMPT="Continue with the plan. Your last message was plain text instead of a tool call. You must use the appropriate MCP tool to proceed, or call git_commit_feature if you are done."
 export AGENT_SPEC_ID="$SPEC_ID" AGENT_TARGET_DIR="$TARGET_DIR" AGENT_MCP_CONFIG="$MCP_CONFIG" AGENT_PHASE="$PHASE" AGENT_PLAN_FILE="$PLAN_FILE"
 
-# shellcheck disable=SC2206  # AGENT_CMD is intentionally word-split
-AGENT_WORDS=($AGENT_CMD)
 IS_OPENCODE=0
-[ "$(basename "${AGENT_WORDS[0]}")" = "opencode" ] && IS_OPENCODE=1
+[ "$BACKEND_KIND" = "opencode" ] && IS_OPENCODE=1
 
 if [ "$PHASE" = "plan" ]; then
   PROMPT="Create the implementation plan for spec ${SPEC_ID}. Step 1: call agent-harness_read_constitution. Step 2: call agent-harness_read_specification with spec_id '${SPEC_ID}'. Step 3: agent-harness_fs_read 'specs/template/03_plan.md' and agent-harness_fs_list '.' (recursive). Step 4: agent-harness_fs_write the complete plan to '${PLAN_REL}' — leave every Pre-flight checkbox as '- [ ]'. Step 5: agent-harness_git_commit_feature with message 'docs(spec): add implementation plan for ${SPEC_ID}' and spec_id '${SPEC_ID}'. Then stop."
@@ -148,6 +182,79 @@ VERIFIER_PROMPT="Verify specification ${SPEC_ID}. Call agent-harness_read_consti
 # Success marker: spec_complete when a Verifier runs, otherwise a commit is enough.
 SUCCESS_MARKER="$RUN_MARKER"
 [ "$VERIFY" -eq 1 ] && SUCCESS_MARKER="$SPEC_MARKER"
+
+# --- Claude Code backend (ADR-013): same loop shape as Open Code, claude -p per role ---
+if [ "$BACKEND_KIND" = "claude" ]; then
+  IMPL_SESSION=""; CC_RESULT=""; VERIFIER_OUTPUT=""
+  cc_primary() {  # $1=resume-session-id-or-empty  $2=prompt
+    local sflag=(); [ -n "$1" ] && sflag=(--resume "$1")
+    local out
+    out="$("${AGENT_WORDS[@]}" -p "$2" --model "$CC_MODEL" --mcp-config "$MCP_CONFIG" \
+          --append-system-prompt "$SYSTEM_PROMPT" \
+          --allowedTools "$ROLE_TOOLS_MCP" --disallowedTools "$CC_DISALLOW" \
+          "${sflag[@]}" --output-format json </dev/null 2>>"$HARNESS_STATE/claude.err")"
+    rc=$?
+    printf '%s\n' "$out" >> "$HARNESS_STATE/claude.jsonl"
+    local sid; sid="$(printf '%s' "$out" | "$PYTHON" -c 'import json,sys;print(json.load(sys.stdin).get("session_id",""))' 2>/dev/null || true)"
+    [ -n "$sid" ] && IMPL_SESSION="$sid"
+    CC_RESULT="$(printf '%s' "$out" | "$PYTHON" -c 'import json,sys;print(json.load(sys.stdin).get("result",""))' 2>/dev/null || true)"
+  }
+  cc_verifier() {
+    local out
+    out="$("${AGENT_WORDS[@]}" -p "$VERIFIER_PROMPT" --model "$CC_MODEL" --mcp-config "$MCP_VERIFIER_CONFIG" \
+          --append-system-prompt "$VERIFIER_SYS" \
+          --allowedTools "$VERIFIER_TOOLS_MCP" --disallowedTools "$CC_DISALLOW" \
+          --output-format json </dev/null 2>>"$HARNESS_STATE/claude.err")"
+    printf '%s\n' "$out" >> "$HARNESS_STATE/claude.jsonl"
+    VERIFIER_OUTPUT="$(printf '%s' "$out" | "$PYTHON" -c 'import json,sys;print(json.load(sys.stdin).get("result",""))' 2>/dev/null || true)"
+  }
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "# backend: claude  model: $CC_MODEL  phase: $PHASE  role: $ROLE_NAME  verify: $VERIFY${GATE_MSG:+  ($GATE_MSG)}"
+    echo "# mcp config: $MCP_CONFIG"
+    [ "$VERIFY" -eq 1 ] && echo "# verifier mcp: $MCP_VERIFIER_CONFIG (--enable-tool mark_spec_complete)"
+    echo "# success marker: $([ "$VERIFY" -eq 1 ] && echo "$SPEC_MARKER" || echo "$RUN_MARKER") (max attempts: $MAX_RETRIES)"
+    echo "# allowed tools: $ROLE_TOOLS_MCP"
+    [ "$VERIFY" -eq 1 ] && echo "# verifier tools: $VERIFIER_TOOLS_MCP"
+    printf '%q ' "${AGENT_WORDS[@]}" -p "$PROMPT" --model "$CC_MODEL" --mcp-config "$MCP_CONFIG" --append-system-prompt "<role:$ROLE_NAME>" --allowedTools "$ROLE_TOOLS_MCP" --disallowedTools "$CC_DISALLOW" --output-format json; echo
+    exit 0
+  fi
+
+  echo "run_agent.sh: phase=$PHASE spec=$SPEC_ID backend=claude model=$CC_MODEL agent=$ROLE_NAME verify=$VERIFY target=$TARGET_DIR max_attempts=$MAX_RETRIES" >&2
+  cd "$TARGET_DIR"
+  FEEDBACK=""
+  for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
+    rm -f "$RUN_MARKER"
+    if [ "$attempt" -eq 1 ]; then
+      echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — starting claude session" >&2
+      cc_primary "" "$PROMPT"
+    else
+      if [ -n "$FEEDBACK" ]; then
+        RP="$(printf 'The Verifier reported the following incomplete items. Fix them and commit:\n%s' "$FEEDBACK")"
+      else
+        RP="$RESUME_PROMPT"
+      fi
+      echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — resuming implementer (--resume ${IMPL_SESSION:0:8}…)" >&2
+      cc_primary "$IMPL_SESSION" "$RP"
+    fi
+    echo "run_agent.sh: implementer finished (rc=$rc)" >&2
+    [ -f "$RUN_MARKER" ] && echo "run_agent.sh: implementer committed this iteration" >&2
+    if [ "$VERIFY" -eq 0 ]; then
+      [ -f "$RUN_MARKER" ] && { echo "run_agent.sh: run successful (marker after attempt $attempt)" >&2; exit 0; }
+      continue
+    fi
+    echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — running Verifier" >&2
+    cc_verifier
+    if [ -f "$SPEC_MARKER" ]; then
+      echo "run_agent.sh: SPEC COMPLETE (Verifier marked $SPEC_MARKER after attempt $attempt)" >&2
+      exit 0
+    fi
+    FEEDBACK="$(printf '%s' "$VERIFIER_OUTPUT" | tail -c 4000)"
+    echo "run_agent.sh: Verifier reported the spec is incomplete; feeding gaps back to the implementer" >&2
+  done
+  echo "run_agent.sh: FAILED — spec not complete after $MAX_RETRIES attempt(s)" >&2
+  exit 3
+fi
 
 # non-Open Code CLI: single generic attempt, no verifier (ADR-005 fallback)
 if [ "$IS_OPENCODE" -eq 0 ]; then

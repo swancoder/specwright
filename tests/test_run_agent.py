@@ -309,3 +309,80 @@ def test_config_tools_subcommand() -> None:
     assert out == ["read_constitution", "read_specification", "fs_list", "fs_read", "fs_write", "git_commit_feature"]
     out = subprocess.run([sys.executable, str(CONFIG_PY), "tools", "Verifier"], capture_output=True, text=True, check=True).stdout.split()
     assert "mark_spec_complete" in out and "git_commit_feature" not in out
+
+
+# ---------------------------------------------------------------- ADR-013 Claude Code backend
+
+FAKE_CLAUDE = r"""#!/bin/bash
+# Fake `claude`: one clean log line per call ("<kind>\t<resume>\t<prompt>"); own counters; JSON out.
+kind=impl; resume="-"; prompt=""; prev=""
+for a in "$@"; do
+  case "$prev" in -p) prompt="$a";; --resume) resume="$a";; esac
+  case "$a" in *mark_spec_complete*) kind=verifier;; esac
+  prev="$a"
+done
+prompt="$(printf '%s' "$prompt" | tr '\n' ' ')"
+printf '%s\t%s\t%s\n' "$kind" "$resume" "$prompt" >> "$FAKE_LOG"
+D="$(dirname "$FAKE_LOG")"; mkdir -p "$AGENT_TARGET_DIR/.agent-harness"
+if [ "$kind" = "verifier" ]; then
+  n=$(( $(cat "$D/vn" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$D/vn"
+  [ -n "${VERIFY_PASS_ON:-}" ] && [ "$n" -ge "$VERIFY_PASS_ON" ] && : > "$AGENT_TARGET_DIR/.agent-harness/spec_complete"
+  printf '{"session_id":"ses_v%s","result":"- missing: GET / route","is_error":false}\n' "$n"
+else
+  n=$(( $(cat "$D/pn" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$D/pn"
+  [ -n "${SUCCEED_ON:-}" ] && [ "$n" -ge "$SUCCEED_ON" ] && : > "$AGENT_TARGET_DIR/.agent-harness/run_successful"
+  printf '{"session_id":"ses_i%s","result":"ok","is_error":false}\n' "$n"
+fi
+"""
+
+
+@pytest.fixture
+def fake_claude(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    d = tmp_path_factory.mktemp("fakecc")
+    exe = d / "claude"; exe.write_text(FAKE_CLAUDE); exe.chmod(0o755)
+    return exe, d / "cc.log"
+
+
+def test_claude_dry_run_wires_mcp_and_mcp_only_tools(target: Path) -> None:
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--dry-run"], target, {"AGENT_CMD": "claude"})
+    assert res.returncode == 0, res.stderr
+    assert "# backend: claude  model: sonnet" in res.stdout and "verify: 1" in res.stdout
+    assert "mcp.verifier.json (--enable-tool mark_spec_complete)" in res.stdout
+    line = res.stdout.splitlines()[-1]
+    assert line.startswith("claude -p ")
+    assert "mcp__agent-harness__git_commit_feature" in res.stdout  # implementer allowed
+    # built-ins are disallowed (MCP-only enforcement); %q may escape commas
+    assert "--disallowedTools" in line and "Bash" in line and "Write" in line
+    mcp = json.loads((target / ".agent-harness" / "mcp.json").read_text())
+    assert "--write-scope" not in mcp["mcpServers"]["agent-harness"]["args"]  # implement phase
+
+
+def test_claude_model_override(target: Path) -> None:
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--model", "opus", "--dry-run"], target, {"AGENT_CMD": "claude"})
+    assert res.returncode == 0 and "model: opus" in res.stdout
+
+
+def test_claude_pingpong_succeeds_when_verifier_marks_complete(target: Path, fake_claude: tuple[Path, Path]) -> None:
+    exe, log = fake_claude
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target,
+               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "1", "VERIFY_PASS_ON": "2"})
+    assert res.returncode == 0, res.stderr
+    calls = [l.split("\t") for l in log.read_text().splitlines()]
+    kinds = [c[0] for c in calls]
+    assert kinds == ["impl", "verifier", "impl", "verifier"]
+    # 2nd implementer call resumes the captured session and carries the gap feedback
+    resume = calls[2]  # kind, resume-session, prompt
+    assert resume[1].startswith("ses_i")
+    assert resume[2].startswith("The Verifier reported the following incomplete items")
+    assert (target / ".agent-harness" / "spec_complete").exists()
+    assert "SPEC COMPLETE" in res.stderr
+
+
+def test_claude_plan_phase_no_verifier(target: Path, fake_claude: tuple[Path, Path]) -> None:
+    exe, log = fake_claude
+    (target / "specs" / "S-01" / "03_plan.md").unlink()
+    res = _run(["--spec", "S-01", "--target-dir", str(target), "--phase", "plan"], target,
+               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "SUCCEED_ON": "1"})
+    assert res.returncode == 0, res.stderr
+    calls = log.read_text()
+    assert "mark_spec_complete" not in calls and "run successful" in res.stderr
