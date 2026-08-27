@@ -38,6 +38,7 @@ config/roles.yaml ────────┴─▶ bin/run_agent.sh ───�
 | 11 | Harness Stability & Tool Refinements | done — `fs_read` line ranges, glob-char rejection in `Sandbox`, SQLite staging exclusions, bounded/explicit `run_tests` timeout, persona milestone-commit + stuck rules (tests: `test_fs_tools.py`, `test_git_tools.py`, `test_test_tools.py`) | [ADR-010](adr/ADR-010-harness-stability-and-refinements.md) |
 | 12 | Plan Phase & Human Approval Gate | done — `run_agent.sh --phase plan\|implement`, `Planner` role, `bin/plan_gate.py` (pre-flight checkboxes), `--write-scope` enforced by the MCP server, per-role tool exposure (tests: `test_plan_gate.py`, `test_run_agent.py`, `test_fs_tools.py`) | [ADR-011](adr/ADR-011-plan-phase-and-approval-gate.md) |
 | 13 | Completion Criteria & Verifier Role | done — implement→verify loop; `spec_complete` marker via capability-gated `mark_spec_complete`; `Verifier` role; session-pinned resume with gap feedback (tests: `test_run_agent.py`, `test_git_tools.py`) | [ADR-012](adr/ADR-012-completion-criteria.md) |
+| 14 | Claude Code Backend | done — `AGENT_CMD=claude` runs the plan/verify loop via `claude -p --output-format json`; role=`--append-system-prompt`+`--allowedTools` (MCP-only), implementer resumed with `--resume`; `--model` (default sonnet) (tests: `test_run_agent.py`) | [ADR-013](adr/ADR-013-claude-code-backend.md) |
 
 ## 3. Component Specifications
 ### 3.1 `bin/` — lifecycle scripts
@@ -53,6 +54,7 @@ config/roles.yaml ────────┴─▶ bin/run_agent.sh ───�
 - `tools/*.py` — each exposes `build_tools(ctx)`; every tool goes through `ctx.sandbox`. See §5 for behaviour. `fs_tools.EXCLUDED_DIRS`, `MAX_LIST_ENTRIES`, `MAX_WRITE_BYTES` govern `fs_list`/`fs_write` (ADR-007).
 - `main.py` — `build_registry`, `build_server` (`mcp.server.Server` with `on_list_tools`/`on_call_tool`), `serve` over `stdio_server()`, CLI `--target-dir` (required) `--db` `--write-scope <prefix>` (ADR-011) `--enable-tool <name>` (repeatable; registers capability-gated tools like `mark_spec_complete`, ADR-012).
 - `gen_opencode_config.py --target-dir <t> --role <r> --out-opencode <f> [--out-mcp <f>] [--write-scope <s>...] [--enable-tool <t>...]` — builds an Open Code config for one role from `roles.yaml`; run once per role (primary + Verifier).
+- **Backends (ADR-013):** `run_agent.sh` detects `opencode` | `claude` | generic from `AGENT_CMD`. Claude Code path writes plain `mcp.json`/`mcp.verifier.json`, applies a role as `--append-system-prompt <role prompt>` + `--allowedTools mcp__agent-harness__<tool>` (built-ins `--disallowedTools`, MCP-only), runs `claude -p … --output-format json` per role, captures `session_id`+`result`, resumes the implementer with `--resume`; `--model` (default `sonnet`).
 - `core/context.py` — `HarnessContext.write_scopes` / `allows_write()` (ADR-011) and `optional_tools` (ADR-012); `fs_write`/`fs_apply_patch` raise `SandboxViolation` outside every scope (reads never scoped).
 - Launch: `./bin/start_mcp.sh --target-dir <repo>` or `python3 -m mcp_server.main --target-dir <repo>`.
 ### 3.3 `knowledge_graph/` — indexer and temporal coupling
