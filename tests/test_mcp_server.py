@@ -13,6 +13,7 @@ from mcp.server import Server
 from knowledge_graph.indexer import DatabaseManager
 from mcp_server.core.context import HarnessContext
 from mcp_server.main import build_registry, build_server, parse_args
+from mcp_server.tools.aliases import ALIAS_MAP
 
 EXPECTED_TOOLS = {
     "read_constitution",
@@ -46,7 +47,9 @@ def ctx(tmp_path: Path) -> HarnessContext:
 
 def test_all_seven_tools_registered_with_schemas(ctx: HarnessContext) -> None:
     registry = build_registry(ctx)
-    assert set(registry.names()) == EXPECTED_TOOLS
+    assert EXPECTED_TOOLS <= set(registry.names())  # canonical tools present
+    assert set(ALIAS_MAP) <= set(registry.names())  # ADR-014 §3 aliases registered
+    assert registry.get("fs_find").args_model is registry.get("fs_list").args_model  # alias delegates
     for tool in registry.list_tools():
         assert isinstance(tool, types.Tool)
         assert tool.description
@@ -108,7 +111,7 @@ def test_mcp_server_handlers_expose_tools(ctx: HarnessContext) -> None:
         return listed, called
 
     listed, called = anyio.run(run)
-    assert {t.name for t in listed.tools} == EXPECTED_TOOLS
+    assert EXPECTED_TOOLS <= {t.name for t in listed.tools}
     assert not called.is_error
     assert json.loads(called.content[0].text)["filepath"] == "src/a.py"  # type: ignore[union-attr]
 

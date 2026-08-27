@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Final
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 from mcp_server.core.context import HarnessContext
 from mcp_server.core.registry import ToolArgs, ToolError, ToolSpec
@@ -34,6 +34,7 @@ class RunTestsArgs(ToolArgs):
         default=DEFAULT_TEST_TIMEOUT_SECONDS,
         ge=1,
         le=MAX_TEST_TIMEOUT_SECONDS,
+        validation_alias=AliasChoices("timeout_seconds", "timeout", "timeout_s"),
         description=f"Kill the test run after this many seconds (default {DEFAULT_TEST_TIMEOUT_SECONDS}, max {MAX_TEST_TIMEOUT_SECONDS}).",
     )
 

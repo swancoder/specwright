@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import harness_config  # noqa: E402
+from mcp_server.tools.aliases import ALIAS_MAP  # noqa: E402
 
 HARNESS_DIR = Path(__file__).resolve().parent.parent
 HARNESS_TOOLS = (
@@ -31,6 +32,8 @@ def build_opencode(role: str, allowed: list[str], prompt: str, server_cmd: str, 
     model = os.environ["MODEL_NAME"]
     allowed_set = set(allowed) or set(HARNESS_TOOLS)
     role_off = tuple(f"agent-harness_{t}" for t in HARNESS_TOOLS if t not in allowed_set)
+    # ADR-014 §3: aliases enabled iff their canonical is allowed; disable the rest
+    alias_off = tuple(f"agent-harness_{a}" for a, c in ALIAS_MAP.items() if c not in allowed_set)
     note = (
         "\n\nTool names in this session (use them EXACTLY as written, no other tools exist):\n"
         + "\n".join(f"- agent-harness_{t}" for t in HARNESS_TOOLS if t in allowed_set)
@@ -58,7 +61,7 @@ def build_opencode(role: str, allowed: list[str], prompt: str, server_cmd: str, 
             "mode": "primary",
             "model": f"{backend}/{model}",
             "prompt": prompt + note,
-            "tools": {t: False for t in (*BUILTIN_OFF, *role_off)},
+            "tools": {t: False for t in (*BUILTIN_OFF, *role_off, *alias_off)},
         }},
     }
 

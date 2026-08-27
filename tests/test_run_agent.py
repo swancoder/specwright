@@ -18,6 +18,17 @@ CONFIG_PY = HARNESS / "bin" / "harness_config.py"
 
 def _run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     full_env = {**os.environ, "PYTHON": sys.executable, **(env or {})}
+    # loop tests drive fakes, not a live model/venv — skip network preflight & the mechanical gate
+    # unless a test opts back in.
+    args = list(args)
+    if "--preflight" in args:
+        args.remove("--preflight")
+    elif "--skip-preflight" not in args:
+        args = [*args, "--skip-preflight"]
+    if "--with-completion-checks" in args:
+        args.remove("--with-completion-checks")
+    elif "--no-completion-checks" not in args:
+        args = [*args, "--no-completion-checks"]
     return subprocess.run([str(RUN_AGENT), *args], cwd=cwd, env=full_env, capture_output=True, text=True)
 
 
@@ -149,6 +160,7 @@ if [ "$agent" = "Verifier" ]; then
 fi
 # primary agent (SystemArchitect / Planner): create run_successful on the Nth primary invocation
 pn=$(grep -v -- "--agent Verifier" "$FAKE_LOG" | grep -c .)
+[ -z "${NO_PROGRESS:-}" ] && echo "impl $pn" > "$AGENT_TARGET_DIR/impl_progress_$pn.txt"
 if [ -n "${SUCCEED_ON:-}" ] && [ "$pn" -ge "$SUCCEED_ON" ]; then
   : > "$AGENT_TARGET_DIR/.agent-harness/run_successful"
 fi
@@ -233,6 +245,17 @@ def test_commit_alone_does_not_end_run_without_verifier_approval(target: Path, f
     assert (target / ".agent-harness" / "run_successful").exists() is False or True  # deleted each iter; not the success cond
     assert not (target / ".agent-harness" / "spec_complete").exists()
     assert "FAILED — spec not complete after 3" in res.stderr
+
+
+def test_no_progress_aborts_early(target: Path, fake_opencode: tuple[Path, Path]) -> None:
+    exe, log = fake_opencode
+    # implementer makes NO file change and never commits; verifier never passes
+    res = _run(["--spec", "S-01", "--target-dir", str(target)], target,
+               {"AGENT_CMD": str(exe), "FAKE_LOG": str(log), "NO_PROGRESS": "1", "MAX_RETRIES": "5"})
+    assert res.returncode == 7, res.stderr
+    assert "no progress" in res.stderr
+    # aborted well before exhausting 5 attempts
+    assert len([l for l in log.read_text().splitlines() if "--agent Verifier" not in l]) <= 3
 
 
 def test_verifier_dry_run_shows_both_agents_and_configs(target: Path) -> None:
@@ -330,6 +353,7 @@ if [ "$kind" = "verifier" ]; then
   printf '{"session_id":"ses_v%s","result":"- missing: GET / route","is_error":false}\n' "$n"
 else
   n=$(( $(cat "$D/pn" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$D/pn"
+  [ -z "${NO_PROGRESS:-}" ] && echo "impl $n" > "$AGENT_TARGET_DIR/impl_progress_$n.txt"
   [ -n "${SUCCEED_ON:-}" ] && [ "$n" -ge "$SUCCEED_ON" ] && : > "$AGENT_TARGET_DIR/.agent-harness/run_successful"
   printf '{"session_id":"ses_i%s","result":"ok","is_error":false}\n' "$n"
 fi

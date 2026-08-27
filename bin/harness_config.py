@@ -6,6 +6,7 @@ Subcommands:
   role [name]      print the persona's system prompt
   model [backend]  print the model name of the backend
   tools [role]     print the role's allowed harness tools, one per line
+  mcptools [role]  print role's tools + gated aliases as mcp__agent-harness__<name>
   list             list backends and roles
 """
 
@@ -16,6 +17,9 @@ import os
 import shlex
 import sys
 from pathlib import Path
+HARNESS_ROOT = str(Path(__file__).resolve().parent.parent)
+import sys as _sys
+_sys.path.insert(0, HARNESS_ROOT)
 from typing import Any
 
 import yaml
@@ -86,6 +90,14 @@ def role_tools(name: str | None) -> list[str]:
     return [str(t) for t in tools]
 
 
+def role_mcptools(name: str | None) -> list[str]:
+    """Canonical tools plus aliases whose canonical is allowed, as mcp__agent-harness__ names (ADR-014)."""
+    from mcp_server.tools.aliases import ALIAS_MAP
+    allowed = role_tools(name)
+    names = list(allowed) + [a for a, c in ALIAS_MAP.items() if c in set(allowed)]
+    return [f"mcp__agent-harness__{n}" for n in names]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="harness_config", description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -93,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("role").add_argument("role", nargs="?")
     sub.add_parser("model").add_argument("backend", nargs="?")
     sub.add_parser("tools").add_argument("role", nargs="?")
+    sub.add_parser("mcptools").add_argument("role", nargs="?")
     sub.add_parser("list")
     ns = ap.parse_args(argv)
 
@@ -105,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         print(backend_env(ns.backend)["MODEL_NAME"])
     elif ns.cmd == "tools":
         print("\n".join(role_tools(ns.role)))
+    elif ns.cmd == "mcptools":
+        print("\n".join(role_mcptools(ns.role)))
     else:
         b, r = _load(BACKENDS_FILE), _load(ROLES_FILE)
         print(f"backends (default: {b.get('default')}): {', '.join(b.get('backends') or {})}")

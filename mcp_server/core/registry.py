@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 class ToolArgs(BaseModel):
     """Base class for tool argument models: unknown fields are rejected."""
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
 
 
 ToolHandler = Callable[[ToolArgs], str]

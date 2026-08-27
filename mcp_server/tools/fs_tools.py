@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Final
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 from mcp_server.core.context import HarnessContext
 from mcp_server.core.registry import ToolArgs, ToolError, ToolSpec
@@ -22,6 +22,13 @@ SPEC_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 MAX_WRITE_BYTES: Final[int] = 1024 * 1024
 MAX_LIST_ENTRIES: Final[int] = 2000
 #: Directory names never listed (any depth) and never written into (ADR-007).
+#: Third-party packages a top-level dir must never shadow (ADR-014 §6); a weak model that
+#: hits an ImportError sometimes writes a fake package (run 8 wrote a fake fastapi/).
+SHADOW_DEPS: Final[frozenset[str]] = frozenset({
+    "fastapi", "starlette", "pydantic", "pydantic_core", "uvicorn", "httpx", "anyio",
+    "sqlalchemy", "sqlmodel", "flask", "django", "requests", "numpy", "pandas", "click",
+    "pytest", "mcp", "yaml", "pyyaml",
+})
 EXCLUDED_DIRS: Final[frozenset[str]] = frozenset({
     ".git", ".hg", ".svn", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
     ".ruff_cache", "node_modules", "dist", "build", ".agent-harness", ".idea", ".vscode",
@@ -38,8 +45,8 @@ class ReadSpecificationArgs(ToolArgs):
 
 class FsReadArgs(ToolArgs):
     filepath: str = Field(description="Path relative to the target codebase root.")
-    start_line: int | None = Field(default=None, ge=1, description="First line to return (1-indexed, inclusive). Omit for whole file.")
-    end_line: int | None = Field(default=None, ge=1, description="Last line to return (1-indexed, inclusive; clamped to EOF).")
+    start_line: int | None = Field(default=None, ge=1, validation_alias=AliasChoices("start_line", "line_start", "start", "from_line"), description="First line to return (1-indexed, inclusive). Omit for whole file.")
+    end_line: int | None = Field(default=None, ge=1, validation_alias=AliasChoices("end_line", "line_end", "end", "to_line"), description="Last line to return (1-indexed, inclusive; clamped to EOF).")
 
 
 class FsListArgs(ToolArgs):
@@ -258,6 +265,34 @@ def fs_list(sandbox: Sandbox, directory_path: str = ".", recursive: bool = False
     )
 
 
+def _shadow_deps(sandbox: Sandbox) -> frozenset[str]:
+    """Builtin blocklist plus top-level names parsed from the target's requirements.txt."""
+    names = set(SHADOW_DEPS)
+    req = sandbox.root / "requirements.txt"
+    if req.is_file():
+        for line in req.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                pkg = re.split(r"[<>=!~;\[ ]", line, 1)[0].strip().lower().replace("-", "_")
+                if pkg:
+                    names.add(pkg)
+    return frozenset(names)
+
+
+def _reject_shadow_package(sandbox: Sandbox, rel: str) -> None:
+    """Reject creating a REPO-ROOT package whose name shadows a dependency (ADR-014 §6).
+
+    Only top-level dirs are blocked; project packages under ``src/`` (e.g. ``src/http``) are fine.
+    """
+    parts = rel.split("/")
+    if len(parts) > 1 and parts[0].lower().replace("-", "_") in _shadow_deps(sandbox):
+        raise ToolError(
+            f"refusing to create a top-level package '{parts[0]}/' that shadows the installed "
+            f"dependency '{parts[0]}'. A ModuleNotFoundError means the dependency is missing from "
+            f"requirements.txt — add it there and re-run tests; do not fake the package."
+        )
+
+
 def fs_write(sandbox: Sandbox, filepath: str, content: str, write_scopes: tuple[str, ...] = ()) -> str:
     """Create or overwrite a UTF-8 text file inside the target codebase.
 
@@ -272,6 +307,7 @@ def fs_write(sandbox: Sandbox, filepath: str, content: str, write_scopes: tuple[
     rel = sandbox.relative(path)
     if any(part in EXCLUDED_DIRS for part in rel.split("/")[:-1]):
         raise ToolError(f"refusing to write inside an excluded directory: {filepath!r}")
+    _reject_shadow_package(sandbox, rel)
     if path.is_dir():
         raise ToolError(f"path is a directory: {filepath!r}")
     size = len(content.encode("utf-8"))

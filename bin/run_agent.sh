@@ -37,6 +37,8 @@ PHASE="implement"
 SKIP_GATE=0
 DRY_RUN=0
 MODEL_OVERRIDE=""
+SKIP_PREFLIGHT=0
+NO_COMPLETION_CHECKS=0
 
 usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -55,6 +57,8 @@ while [ $# -gt 0 ]; do
     --skip-plan-gate) SKIP_GATE=1; shift ;;
     --model)       MODEL_OVERRIDE="${2:-}"; shift 2 ;;
     --model=*)     MODEL_OVERRIDE="${1#*=}"; shift ;;
+    --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
+    --no-completion-checks) NO_COMPLETION_CHECKS=1; shift ;;
     --dry-run)     DRY_RUN=1; shift ;;
     -h|--help)     usage 0 ;;
     *) echo "run_agent.sh: unknown argument '$1'" >&2; usage 2 ;;
@@ -167,6 +171,33 @@ VERIFIER_OUT="$HARNESS_STATE/verifier_last.txt"
 rm -f "$RUN_MARKER" "$SPEC_MARKER"   # stale markers must never count
 
 RESUME_PROMPT="Continue with the plan. Your last message was plain text instead of a tool call. You must use the appropriate MCP tool to proceed, or call git_commit_feature if you are done."
+
+# --- ADR-014 reliability helpers ---------------------------------------------
+LAST_IMPL="$HARNESS_STATE/last_impl.txt"
+NOPROG=0; PREV_KEY=""; GATE_GAPS=""
+progress_key() { { { git -C "$TARGET_DIR" rev-parse HEAD 2>/dev/null; git -C "$TARGET_DIR" status --porcelain 2>/dev/null; find "$TARGET_DIR" -type f -not -path '*/.agent-harness/*' -not -path '*/.git/*' -not -path '*/.venv/*' -printf '%p %s %T@\n' 2>/dev/null; } | md5sum | cut -d" " -f1; } || true; }
+recovery_hint() { "$PYTHON" "$HARNESS_DIR/bin/recover_hint.py" "$1" 2>/dev/null || true; }
+COMPLETION_GATE=0
+[ "$PHASE" = "implement" ] && [ "$NO_COMPLETION_CHECKS" -eq 0 ] && COMPLETION_GATE=1
+run_completion_gate() {   # sets GATE_GAPS; returns 0 iff all mechanical checks pass
+  [ "$COMPLETION_GATE" -eq 1 ] || return 0
+  GATE_GAPS="$("$PYTHON" "$HARNESS_DIR/bin/completion_checks.py" --target-dir "$TARGET_DIR" 2>/dev/null)"; return $?
+}
+note_progress() {   # $1 = "committed" marker present? returns 0 to continue, exits 7 on stall
+  local key; key="$(progress_key)"
+  if [ "$key" = "$PREV_KEY" ]; then NOPROG=$((NOPROG+1)); else NOPROG=0; PREV_KEY="$key"; fi
+  if [ "$NOPROG" -ge 2 ]; then echo "run_agent.sh: ABORT — no progress (no commit or file change) for 2 attempts" >&2; exit 7; fi
+}
+
+# --- model preflight (local OpenAI-compatible backends only; ADR-014 §1) -----
+if [ "$DRY_RUN" -eq 0 ] && [ "$SKIP_PREFLIGHT" -eq 0 ] && [ "$BACKEND_KIND" != "claude" ]; then
+  echo "run_agent.sh: model preflight ($MODEL_NAME @ ${OPENAI_BASE_URL:-?})" >&2
+  if ! "$PYTHON" "$HARNESS_DIR/bin/preflight_model.py"; then
+    pf=$?
+    [ "$pf" -eq 4 ] && { echo "run_agent.sh: ABORT — model cannot make structured tool calls (see above); --skip-preflight to override" >&2; exit 6; }
+    echo "run_agent.sh: preflight warning (rc=$pf) — continuing" >&2
+  fi
+fi
 export AGENT_SPEC_ID="$SPEC_ID" AGENT_TARGET_DIR="$TARGET_DIR" AGENT_MCP_CONFIG="$MCP_CONFIG" AGENT_PHASE="$PHASE" AGENT_PLAN_FILE="$PLAN_FILE"
 
 IS_OPENCODE=0
@@ -223,6 +254,7 @@ if [ "$BACKEND_KIND" = "claude" ]; then
   echo "run_agent.sh: phase=$PHASE spec=$SPEC_ID backend=claude model=$CC_MODEL agent=$ROLE_NAME verify=$VERIFY target=$TARGET_DIR max_attempts=$MAX_RETRIES" >&2
   cd "$TARGET_DIR"
   FEEDBACK=""
+  PREV_KEY="$(progress_key)"
   for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
     rm -f "$RUN_MARKER"
     if [ "$attempt" -eq 1 ]; then
@@ -232,7 +264,9 @@ if [ "$BACKEND_KIND" = "claude" ]; then
       if [ -n "$FEEDBACK" ]; then
         RP="$(printf 'The Verifier reported the following incomplete items. Fix them and commit:\n%s' "$FEEDBACK")"
       else
-        RP="$RESUME_PROMPT"
+        printf '%s' "$CC_RESULT" > "$LAST_IMPL"   # ADR-014 §2: check for a dropped tool call
+        HINT="$(recovery_hint "$LAST_IMPL")"
+        RP="${HINT:-$RESUME_PROMPT}"
       fi
       echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — resuming implementer (--resume ${IMPL_SESSION:0:8}…)" >&2
       cc_primary "$IMPL_SESSION" "$RP"
@@ -246,11 +280,18 @@ if [ "$BACKEND_KIND" = "claude" ]; then
     echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — running Verifier" >&2
     cc_verifier
     if [ -f "$SPEC_MARKER" ]; then
-      echo "run_agent.sh: SPEC COMPLETE (Verifier marked $SPEC_MARKER after attempt $attempt)" >&2
-      exit 0
+      if run_completion_gate; then
+        echo "run_agent.sh: SPEC COMPLETE (Verifier + mechanical checks passed, attempt $attempt)" >&2
+        exit 0
+      fi
+      echo "run_agent.sh: Verifier said complete but mechanical checks FAILED — continuing (ADR-014 §4)" >&2
+      rm -f "$SPEC_MARKER"
+      FEEDBACK="$(printf 'Automated checks still fail (fix and re-commit):\n%s' "$GATE_GAPS")"
+      PREV_KEY="$(progress_key)"; continue
     fi
     FEEDBACK="$(printf '%s' "$VERIFIER_OUTPUT" | tail -c 4000)"
-    echo "run_agent.sh: Verifier reported the spec is incomplete; feeding gaps back to the implementer" >&2
+    note_progress
+    echo "run_agent.sh: Verifier reported the spec is incomplete; feeding gaps back (no-progress=$NOPROG)" >&2
   done
   echo "run_agent.sh: FAILED — spec not complete after $MAX_RETRIES attempt(s)" >&2
   exit 3
@@ -289,21 +330,23 @@ echo "run_agent.sh: phase=$PHASE spec=$SPEC_ID backend=$LLM_BACKEND model=$MODEL
 cd "$TARGET_DIR"
 FEEDBACK=""
 IMPL_SESSION=""
+PREV_KEY="$(progress_key)"
 for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
   rm -f "$RUN_MARKER"
   if [ "$attempt" -eq 1 ]; then
     echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — starting session" >&2
-    oc "$PROMPT" && rc=0 || rc=$?
+    oc "$PROMPT" 2>&1 | tee "$LAST_IMPL"; rc=${PIPESTATUS[0]}
   else
     if [ -n "$FEEDBACK" ]; then
       RP="$(printf 'The Verifier reported the following incomplete items. Fix them and commit:\n%s' "$FEEDBACK")"
     else
-      RP="$RESUME_PROMPT"
+      HINT="$(recovery_hint "$LAST_IMPL")"   # ADR-014 §2: was the last message a dropped tool call?
+      RP="${HINT:-$RESUME_PROMPT}"
     fi
     SESS_ARGS=(--continue)
     [ -n "$IMPL_SESSION" ] && SESS_ARGS=(--session "$IMPL_SESSION")
     echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — resuming implementer (${SESS_ARGS[0]})" >&2
-    oc "${SESS_ARGS[@]}" "$RP" && rc=0 || rc=$?
+    oc "${SESS_ARGS[@]}" "$RP" 2>&1 | tee "$LAST_IMPL"; rc=${PIPESTATUS[0]}
   fi
   echo "run_agent.sh: implementer exited with code $rc" >&2
   [ -z "$IMPL_SESSION" ] && IMPL_SESSION="$(latest_session)"
@@ -317,11 +360,18 @@ for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
   echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — running Verifier" >&2
   oc_verify "$VERIFIER_PROMPT" >"$VERIFIER_OUT" 2>&1 || true
   if [ -f "$SPEC_MARKER" ]; then
-    echo "run_agent.sh: SPEC COMPLETE (Verifier marked $SPEC_MARKER after attempt $attempt)" >&2
-    exit 0
+    if run_completion_gate; then
+      echo "run_agent.sh: SPEC COMPLETE (Verifier + mechanical checks passed, attempt $attempt)" >&2
+      exit 0
+    fi
+    echo "run_agent.sh: Verifier said complete but mechanical checks FAILED — continuing (ADR-014 §4)" >&2
+    rm -f "$SPEC_MARKER"
+    FEEDBACK="$(printf 'Automated checks still fail (fix and re-commit):\n%s' "$GATE_GAPS")"
+    PREV_KEY="$(progress_key)"; continue
   fi
   FEEDBACK="$(tail -c 4000 "$VERIFIER_OUT" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
-  echo "run_agent.sh: Verifier reported the spec is incomplete; feeding gaps back to the implementer" >&2
+  note_progress
+  echo "run_agent.sh: Verifier reported the spec is incomplete; feeding gaps back (no-progress=$NOPROG)" >&2
 done
 echo "run_agent.sh: FAILED — spec not complete after $MAX_RETRIES attempt(s)" >&2
 exit 3
