@@ -221,11 +221,13 @@ if [ "$BACKEND_KIND" = "claude" ]; then
   cc_primary() {  # $1=resume-session-id-or-empty  $2=prompt
     local sflag=(); [ -n "$1" ] && sflag=(--resume "$1")
     local out
+    set +e   # a non-zero claude exit must be captured, not abort the supervisor (set -e)
     out="$("${AGENT_WORDS[@]}" -p "$2" --model "$CC_MODEL" --mcp-config "$MCP_CONFIG" \
           --append-system-prompt "$SYSTEM_PROMPT" \
           --allowedTools "$ROLE_TOOLS_MCP" --disallowedTools "$CC_DISALLOW" \
           "${sflag[@]}" --output-format json </dev/null 2>>"$HARNESS_STATE/claude.err")"
     rc=$?
+    set -e
     printf '%s\n' "$out" >> "$HARNESS_STATE/claude.jsonl"
     local sid; sid="$(printf '%s' "$out" | "$PYTHON" -c 'import json,sys;print(json.load(sys.stdin).get("session_id",""))' 2>/dev/null || true)"
     [ -n "$sid" ] && IMPL_SESSION="$sid"
@@ -233,10 +235,12 @@ if [ "$BACKEND_KIND" = "claude" ]; then
   }
   cc_verifier() {
     local out
+    set +e   # a non-zero claude exit must not abort the supervisor (set -e)
     out="$("${AGENT_WORDS[@]}" -p "$VERIFIER_PROMPT" --model "$CC_MODEL" --mcp-config "$MCP_VERIFIER_CONFIG" \
           --append-system-prompt "$VERIFIER_SYS" \
           --allowedTools "$VERIFIER_TOOLS_MCP" --disallowedTools "$CC_DISALLOW" \
           --output-format json </dev/null 2>>"$HARNESS_STATE/claude.err")"
+    set -e
     printf '%s\n' "$out" >> "$HARNESS_STATE/claude.jsonl"
     VERIFIER_OUTPUT="$(printf '%s' "$out" | "$PYTHON" -c 'import json,sys;print(json.load(sys.stdin).get("result",""))' 2>/dev/null || true)"
   }
