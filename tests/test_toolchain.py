@@ -131,3 +131,16 @@ def test_completion_checks_uses_toolchain_for_non_python(tmp_path: Path) -> None
         "install": "true", "test": "true", "lint": "echo 'phpstan: 2 errors' >&2; exit 1"}}))
     gaps = cc.run_checks(tmp_path)
     assert any("lint FAILED (php)" in g for g in gaps) and not any("hermetic" in g for g in gaps)
+
+
+def test_run_tests_delegates_to_toolchain(tmp_path: Path) -> None:
+    """run_tests defers to the toolchain 'test' task when a toolchain.json is present (ADR-015)."""
+    import json as _json
+
+    from mcp_server.tools.test_tools import run_tests
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "toolchain.json").write_text(_json.dumps(
+        {"stack": "node", "commands": {"test": "echo running vitest && exit 3"}}))
+    out = _json.loads(run_tests(Sandbox(tmp_path), "tests"))
+    assert out["runner"] == "toolchain:node" and out["exit_code"] == 3
+    assert "vitest" in out["stdout"] and out["python"] is None

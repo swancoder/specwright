@@ -14,6 +14,7 @@ from pydantic import AliasChoices, Field
 from mcp_server.core.context import HarnessContext
 from mcp_server.core.registry import ToolArgs, ToolError, ToolSpec
 from mcp_server.core.sandbox import Sandbox
+from mcp_server.core.toolchain import JsonToolchain, head_tail_truncate, resolve_toolchain, sanitize
 
 DEFAULT_TEST_TIMEOUT_SECONDS: Final[int] = 60
 MAX_TEST_TIMEOUT_SECONDS: Final[int] = 600
@@ -146,6 +147,15 @@ def run_tests(sandbox: Sandbox, test_target: str, timeout_seconds: int = DEFAULT
     """
     if not 1 <= timeout_seconds <= MAX_TEST_TIMEOUT_SECONDS:
         raise ToolError(f"timeout_seconds must be between 1 and {MAX_TEST_TIMEOUT_SECONDS}")
+    tc = resolve_toolchain(sandbox)
+    if isinstance(tc, JsonToolchain):   # ADR-015: a declared toolchain owns "test"
+        r = tc.run(sandbox, "test", timeout=float(timeout_seconds))
+        return json.dumps({
+            "runner": f"toolchain:{tc.stack}", "python": None, "env_actions": [],
+            "timeout_seconds": timeout_seconds, "exit_code": r.exit_code, "timed_out": r.timed_out,
+            "timeout_message": (f"toolchain test killed after {timeout_seconds}s" if r.timed_out else None),
+            "stdout": head_tail_truncate(sanitize(r.stdout)), "stderr": head_tail_truncate(sanitize(r.stderr)),
+        }, indent=2)
     path_part = test_target.split("::", 1)[0]
     resolved = sandbox.resolve(path_part, must_exist=True)
     normalized = sandbox.relative(resolved) + test_target[len(path_part):]
