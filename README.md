@@ -5,12 +5,73 @@
 > Spec-driven agent harness — drives AI coding agents (local or hosted) through
 > plan → approve → implement → verify, with a mechanical gate that certifies "done" honestly.
 
-Isolated orchestrator + MCP server connecting a local LLM to a separate target codebase,
-with a Git-history-based temporal coupling knowledge graph (SQLite).
+## What is Specwright?
+
+Specwright turns a **specification into working, verified code** by driving an AI coding agent
+through a disciplined loop — and, crucially, by deciding *for itself* whether the result is
+actually done.
+
+You write the intent and spec. A **Planner** agent drafts an implementation plan; **you approve it**
+by ticking its pre-flight checklist. A **SystemArchitect** agent then implements the feature,
+touching the target project only through a small set of sandboxed [MCP](https://modelcontextprotocol.io)
+tools. An independent **Verifier** reads the spec and runs the tests, and a **mechanical completion
+gate** rebuilds the project from scratch and runs its type-checks and linters. The run is declared
+complete **only when the code genuinely builds, tests, types and lints in a clean environment** —
+not when the model says so.
+
+That gate is the point. Across a four-model study (see `docs/adr/` and the audit reports), an
+unguarded harness happily certified broken output as "done"; with the gate, the same weak local
+model produces an honest *"not done"* instead. **A better harness can't make a weak model strong —
+only honest.** Specwright runs the *identical* loop on a local open-weight model (via
+[OpenCode](https://opencode.ai) + [Ollama](https://ollama.com)) or a hosted one
+([Claude Code](https://docs.claude.com/en/docs/claude-code)), and on any tech stack (Python, PHP/JS,
+Node/TypeScript, Java) via a per-project `toolchain.json`.
 
 - Orientation and mandatory protocols: `CLAUDE.md`
 - Technical reference: `docs/SPECS.md`
-- Decisions: `docs/adr/`
+- Decision records (one per stage): `docs/adr/`
+
+## Architecture
+
+```mermaid
+flowchart TD
+    spec["specs/&lt;feature&gt;<br/>01_intent · 02_spec"] --> plan
+    subgraph loop["bin/run_agent.sh — supervisor loop"]
+        direction TB
+        plan["Plan phase · Planner<br/>writes 03_plan.md"] --> gate1{"human ticks<br/>Pre-flight?"}
+        gate1 -->|approved| impl["Implement · SystemArchitect<br/>fs_write / apply_patch / run_tests / commit"]
+        impl --> verify["Verifier<br/>reads spec · runs tests"]
+        verify -->|gaps fed back| impl
+        verify -->|marks complete| mgate{"mechanical gate<br/>build · test · type · lint<br/>in a clean env"}
+        mgate -->|fails → gaps back| impl
+        mgate -->|passes| done(["spec_complete ✓"])
+    end
+    impl -. "MCP (stdio)" .-> mcp
+    verify -. "MCP (stdio)" .-> mcp
+    subgraph host["agent host"]
+        agent["agent CLI<br/>OpenCode / Claude Code"]
+        mcp["mcp_server<br/>tool registry"]
+    end
+    mcp --> sandbox["Sandbox<br/>path + command confinement"]
+    sandbox --> target[("target project<br/>+ toolchain.json")]
+```
+
+**Two gates make the verdict trustworthy.** The **approval gate** (a human ticking `03_plan.md`'s
+pre-flight boxes) keeps the agent from building the wrong thing; the **completion gate** keeps it
+from *claiming* the right thing was finished when it wasn't. Neither is lowered to fit the model.
+
+**Components**
+
+| Piece | Role |
+|-------|------|
+| `bin/run_agent.sh` | The supervisor loop: preflight → plan/implement/verify → completion gate → retry, with dropped-tool-call recovery and a no-progress abort. Backend-agnostic (`AGENT_CMD=opencode\|claude`). |
+| `bin/init_project.sh` | Scaffolds a new target (constitution, specs skeleton, `toolchain.json`, git baseline) for a chosen **stack** and **agent backend**. |
+| `mcp_server/` | The MCP boundary the agent acts through: a strict tool registry (`fs_read/write/list`, `apply_patch`, `run_tests`, `git_commit_feature`, `run_toolchain_task`, `query_temporal_coupling`, …) with per-role gating. |
+| `mcp_server/core/sandbox.py` | Confines every file and command to the target directory — no path traversal, scrubbed env, timeouts. The security boundary (agents get MCP tools only, never a raw shell). |
+| `mcp_server/core/toolchain.py` | Resolves a target's `toolchain.json` (install/lint/test/build) or falls back to the Python default — the stack-agnostic execution layer. |
+| `knowledge_graph/` | Incremental SQLite indexer computing **temporal coupling** (Jaccard co-change) from git history, surfaced to the agent as `query_temporal_coupling`. |
+| `config/roles.yaml` | The `Planner` / `SystemArchitect` / `Verifier` personas and their allowed tools. |
+| `bin/completion_checks.py` | The mechanical gate: a hermetic build + test + type-check + lint, via the toolchain abstraction. |
 
 ## Quick start
 ```bash
