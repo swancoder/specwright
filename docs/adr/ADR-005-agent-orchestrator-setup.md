@@ -7,7 +7,7 @@ Accepted
 - **Stage:** 6
 
 ## Context
-The Agent Harness requires a reliable way to boot the AI agent, point it at a specific specification, inject the local LLM configuration (e.g., Ollama/FreeToken running Qwen or similar models), and wire it to our sandboxed MCP server. 
+The Specwright requires a reliable way to boot the AI agent, point it at a specific specification, inject the local LLM configuration (e.g., Ollama/FreeToken running Qwen or similar models), and wire it to our sandboxed MCP server. 
 
 ## Decision
 1. **Configuration (`config/llm_backends.yaml`):** We will define a structured YAML configuration for LLM endpoints (defining provider, base_url, model name, and required API keys/tokens).

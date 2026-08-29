@@ -7,7 +7,7 @@ Accepted
 - **Stage:** 4
 
 ## Context
-The Agent Harness requires a standard communication interface to interact with the LLM. We need to implement the Model Context Protocol (MCP) server that will expose our tool stubs and the newly created Knowledge Graph engine to the agent.
+The Specwright requires a standard communication interface to interact with the LLM. We need to implement the Model Context Protocol (MCP) server that will expose our tool stubs and the newly created Knowledge Graph engine to the agent.
 
 ## Decision
 We will use the official Python `mcp` SDK to stand up the server using stdio transport.

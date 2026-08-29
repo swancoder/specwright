@@ -7,7 +7,7 @@ Accepted
 - **Stage:** 7
 
 ## Context
-The Agent Harness uses Open Code as the primary CLI agent and relies on a local LLM via Ollama (`gpt-oss:20b`). We need a deterministic bootstrap script to prepare the environment and ensure the orchestrator correctly passes the OpenAI-compatible environment variables to Open Code without requiring an intermediate translation proxy.
+The Specwright uses Open Code as the primary CLI agent and relies on a local LLM via Ollama (`gpt-oss:20b`). We need a deterministic bootstrap script to prepare the environment and ensure the orchestrator correctly passes the OpenAI-compatible environment variables to Open Code without requiring an intermediate translation proxy.
 
 ## Decision
 1. **Bootstrap Script (`bin/bootstrap_env.sh`):**

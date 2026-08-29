@@ -1,4 +1,4 @@
-# SPECS.md — Agent Harness Consolidated Technical Specification
+# SPECS.md — Specwright Consolidated Technical Specification
 
 Authoritative technical reference tying together `README.md`, `CLAUDE.md`, and the ADRs in `docs/adr/`.
 Decision rationale is not repeated here — each section links to its ADR.
