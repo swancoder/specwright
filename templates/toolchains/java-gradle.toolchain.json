@@ -1,0 +1,9 @@
+{
+  "stack": "java-gradle",
+  "commands": {
+    "install": "./gradlew --no-daemon --console=plain dependencies",
+    "lint": "./gradlew --no-daemon --console=plain check -x test",
+    "test": "./gradlew --no-daemon --console=plain test",
+    "build": "./gradlew --no-daemon --console=plain assemble"
+  }
+}

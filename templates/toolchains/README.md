@@ -57,6 +57,7 @@ These commands are run **non-interactively by an MCP tool**, and the tool trunca
 | `php-js.toolchain.json` | PHP (Composer) + JS (npm) | `composer install` + `npm ci` | PHPStan + php-cs-fixer + `npm run lint` | PHPUnit + `npm test` | autoload dump + `npm run build` |
 | `node-typescript.toolchain.json` | Node.js / TypeScript | `npm ci` | `tsc --noEmit` + ESLint | `npm test` (`CI=true`) | `npm run build` |
 | `java-maven.toolchain.json` | Java (Maven) | `mvn dependency:go-offline` | Checkstyle + SpotBugs | `mvn test` | `mvn package` |
+| `java-gradle.toolchain.json` | Java (Gradle) | `gradlew dependencies` | `gradlew check -x test` | `gradlew test` | `gradlew assemble` |
 
 ### Adapting per project
 
@@ -64,17 +65,7 @@ These commands are run **non-interactively by an MCP tool**, and the tool trunca
   `tsc` / your bundler). Point them at whatever your project actually uses.
 - **PHP lint** assumes PHPStan and php-cs-fixer are dev dependencies; swap for Psalm / PHP_CodeSniffer
   if that's your setup.
-- **Java with Gradle** instead of Maven — use the wrapper and the equivalent tasks:
-  ```json
-  {
-    "stack": "java-gradle",
-    "commands": {
-      "install": "./gradlew --no-daemon --console=plain dependencies",
-      "lint":    "./gradlew --no-daemon --console=plain check -x test",
-      "test":    "./gradlew --no-daemon --console=plain test",
-      "build":   "./gradlew --no-daemon --console=plain assemble"
-    }
-  }
-  ```
-  (`--console=plain` suppresses the progress UI; `--no-daemon` keeps it non-persistent.)
+- **Java with Gradle** instead of Maven — use `java-gradle.toolchain.json` (wrapper-based;
+  `--console=plain` suppresses the progress UI, `--no-daemon` keeps it non-persistent,
+  `check -x test` runs static verification without the test task).
 - **Maven wrapper** — prefer `./mvnw` over `mvn` when the project ships one, for a pinned Maven version.
