@@ -1,6 +1,9 @@
-# Agent Harness
+# Specwright
 
 [![CI](https://github.com/swancoder/specwright/actions/workflows/ci.yml/badge.svg)](https://github.com/swancoder/specwright/actions/workflows/ci.yml)
+
+> Spec-driven agent harness — drives AI coding agents (local or hosted) through
+> plan → approve → implement → verify, with a mechanical gate that certifies "done" honestly.
 
 Isolated orchestrator + MCP server connecting a local LLM to a separate target codebase,
 with a Git-history-based temporal coupling knowledge graph (SQLite).
