@@ -22,7 +22,7 @@ HARNESS_DIR = Path(__file__).resolve().parent.parent
 HARNESS_TOOLS = (
     "read_constitution", "read_specification", "fs_list", "fs_read", "fs_write",
     "fs_apply_patch", "run_tests", "git_commit_feature", "query_temporal_coupling",
-    "mark_spec_complete",
+    "mark_spec_complete", "run_toolchain_task",
 )
 BUILTIN_OFF = ("bash", "edit", "write", "patch", "multiedit", "webfetch", "read", "glob", "grep", "list", "task", "skill")
 

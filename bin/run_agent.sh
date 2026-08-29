@@ -119,7 +119,8 @@ GEN_SCOPE=()
 [ "$PHASE" = "plan" ] && GEN_SCOPE=(--write-scope specs)
 "$PYTHON" "$HARNESS_DIR/bin/gen_opencode_config.py" \
   --target-dir "$TARGET_DIR" --role "$ROLE_NAME" \
-  --out-opencode "$OPENCODE_CONFIG_FILE" --out-mcp "$MCP_CONFIG" "${GEN_SCOPE[@]}"
+  --out-opencode "$OPENCODE_CONFIG_FILE" --out-mcp "$MCP_CONFIG" "${GEN_SCOPE[@]}" \
+  --enable-tool run_toolchain_task
 
 # Backend detection: opencode | claude | generic (ADR-013). Open Code path unchanged.
 # shellcheck disable=SC2206
@@ -139,7 +140,7 @@ CC_DISALLOW="Bash,Edit,MultiEdit,Write,NotebookEdit,Read,Glob,Grep,WebFetch,WebS
 if [ "$BACKEND_KIND" = "opencode" ] && [ "$VERIFY" -eq 1 ]; then
   "$PYTHON" "$HARNESS_DIR/bin/gen_opencode_config.py" \
     --target-dir "$TARGET_DIR" --role "$VERIFIER_ROLE" \
-    --out-opencode "$VERIFIER_CONFIG_FILE" --enable-tool mark_spec_complete
+    --out-opencode "$VERIFIER_CONFIG_FILE" --enable-tool mark_spec_complete --enable-tool run_toolchain_task
 fi
 
 if [ "$BACKEND_KIND" = "claude" ]; then
@@ -155,9 +156,9 @@ with open(e["OUT"], "w", encoding="utf-8") as fh:
     json.dump({"mcpServers": {"agent-harness": srv}}, fh, indent=2); fh.write("\n")
 PYW
   }
-  CC_SCOPE=""; [ "$PHASE" = "plan" ] && CC_SCOPE="--write-scope specs"
+  CC_SCOPE="--enable-tool run_toolchain_task"; [ "$PHASE" = "plan" ] && CC_SCOPE="--write-scope specs"
   _write_mcp "$MCP_CONFIG" "$CC_SCOPE"
-  [ "$VERIFY" -eq 1 ] && _write_mcp "$MCP_VERIFIER_CONFIG" "--enable-tool mark_spec_complete"
+  [ "$VERIFY" -eq 1 ] && _write_mcp "$MCP_VERIFIER_CONFIG" "--enable-tool mark_spec_complete --enable-tool run_toolchain_task"
   # role tool allowlists as comma-joined mcp__agent-harness__<tool>
   ROLE_TOOLS_MCP="$(printf '%s\n' $ROLE_TOOLS | sed 's/^/mcp__agent-harness__/' | paste -sd, -)"
   VERIFIER_SYS="$("$PYTHON" "$HARNESS_DIR/bin/harness_config.py" role "$VERIFIER_ROLE")"

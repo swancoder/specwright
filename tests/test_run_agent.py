@@ -86,7 +86,8 @@ def test_run_agent_dry_run_writes_mcp_json_and_command(target: Path) -> None:
     mcp = json.loads((target / ".agent-harness" / "mcp.json").read_text())
     server = mcp["mcpServers"]["agent-harness"]
     assert server["command"] == str(HARNESS / "bin" / "start_mcp.sh")
-    assert server["args"] == ["--target-dir", str(target)]
+    assert server["args"][:2] == ["--target-dir", str(target)]
+    assert "run_toolchain_task" in server["args"]  # ADR-015: implementer server enables it
 
     line = res.stdout.splitlines()[-1]  # printf %q output; bash quoting is not shlex-parseable
     assert line.startswith(f"fake-agent --mcp-config {target / '.agent-harness' / 'mcp.json'} --append-system-prompt ")
@@ -114,7 +115,8 @@ def test_run_agent_default_opencode_invocation(target: Path) -> None:
     assert limit == {"context": 32768, "output": 8192}, "missing limit => Open Code compacts every turn"
     mcp = oc["mcp"]["agent-harness"]
     assert mcp["type"] == "local"
-    assert mcp["command"] == [str(HARNESS / "bin" / "start_mcp.sh"), "--target-dir", str(target)]
+    assert mcp["command"][:3] == [str(HARNESS / "bin" / "start_mcp.sh"), "--target-dir", str(target)]
+    assert "run_toolchain_task" in mcp["command"]
     agent = oc["agent"]["SystemArchitect"]
     assert "Do NOT guess" in agent["prompt"]
     assert "- agent-harness_read_constitution" in agent["prompt"], "persona must carry Open Code's prefixed tool names"
@@ -270,12 +272,12 @@ def test_verifier_dry_run_shows_both_agents_and_configs(target: Path) -> None:
     # generated configs on disk
     vcfg = json.loads((target / ".agent-harness" / "opencode.verifier.json").read_text())
     assert "Verifier" in vcfg["agent"]
-    assert vcfg["mcp"]["agent-harness"]["command"][-2:] == ["--enable-tool", "mark_spec_complete"]
+    assert "mark_spec_complete" in vcfg["mcp"]["agent-harness"]["command"] and "run_toolchain_task" in vcfg["mcp"]["agent-harness"]["command"]
     vtools = vcfg["agent"]["Verifier"]["tools"]
     assert "agent-harness_mark_spec_complete" not in vtools  # allowed -> not disabled
     assert vtools["agent-harness_git_commit_feature"] is False and vtools["agent-harness_fs_write"] is False
     impl = json.loads((target / ".agent-harness" / "opencode.json").read_text())
-    assert impl["mcp"]["agent-harness"]["command"][-1] != "mark_spec_complete", "implementer server must NOT enable it"
+    assert "mark_spec_complete" not in impl["mcp"]["agent-harness"]["command"], "implementer server must NOT enable spec-complete"
     assert impl["agent"]["SystemArchitect"]["tools"]["agent-harness_mark_spec_complete"] is False
 
 
@@ -313,9 +315,10 @@ def test_plan_phase_uses_planner_write_scope_and_tool_subset(target: Path) -> No
     assert "specs/S-01/03_plan.md" in cmd[-1] and "Pre-flight checkbox" in cmd[-1]
 
     mcp = json.loads((target / ".agent-harness" / "mcp.json").read_text())
-    assert mcp["mcpServers"]["agent-harness"]["args"] == ["--target-dir", str(target), "--write-scope", "specs"]
+    a = mcp["mcpServers"]["agent-harness"]["args"]
+    assert a[:4] == ["--target-dir", str(target), "--write-scope", "specs"] and "run_toolchain_task" in a
     oc = json.loads((target / ".agent-harness" / "opencode.json").read_text())
-    assert oc["mcp"]["agent-harness"]["command"][-2:] == ["--write-scope", "specs"]
+    assert "--write-scope" in oc["mcp"]["agent-harness"]["command"] and "specs" in oc["mcp"]["agent-harness"]["command"]
     tools = oc["agent"]["Planner"]["tools"]
     assert tools["agent-harness_run_tests"] is False and tools["agent-harness_fs_apply_patch"] is False
     assert "agent-harness_fs_write" not in tools and "agent-harness_git_commit_feature" not in tools

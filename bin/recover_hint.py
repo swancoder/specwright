@@ -15,7 +15,7 @@ import sys
 TOOLS = (
     "read_constitution", "read_specification", "fs_list", "fs_read", "fs_write",
     "fs_apply_patch", "run_tests", "git_commit_feature", "query_temporal_coupling",
-    "mark_spec_complete",
+    "mark_spec_complete", "run_toolchain_task",
 )
 _JSON_NAME = re.compile(r'\{\s*"name"\s*:\s*"(?:agent-harness_|mcp__agent-harness__)?([a-z_]+)"')
 _CALL = re.compile(r'(?:agent-harness[_.]|mcp__agent-harness__)([a-z_]+)\s*\(')

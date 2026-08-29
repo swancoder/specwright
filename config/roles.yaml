@@ -12,6 +12,7 @@ roles:
       - fs_read
       - fs_list
       - run_tests
+      - run_toolchain_task
       - mark_spec_complete
     system_prompt: |
       You are Verifier, the acceptance persona of the Agent Harness. You judge whether the
@@ -90,6 +91,7 @@ roles:
       - fs_write
       - fs_apply_patch
       - run_tests
+      - run_toolchain_task
       - git_commit_feature
       - query_temporal_coupling
     system_prompt: |

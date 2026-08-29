@@ -20,6 +20,10 @@ import tempfile
 import venv
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from mcp_server.core.sandbox import Sandbox  # noqa: E402
+from mcp_server.core.toolchain import head_tail_truncate, resolve_toolchain, sanitize  # noqa: E402
+
 
 def _run(argv: list[str], cwd: Path, timeout: float = 900.0) -> subprocess.CompletedProcess:
     return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)
@@ -59,29 +63,35 @@ def hermetic_build_and_test(target: Path) -> str | None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def venv_tool(target: Path, module: str, args: list[str]) -> str | None:
-    py = target / ".venv" / "bin" / "python"
-    if not py.exists():
+
+def _toolchain_gap(target: Path, task: str) -> str | None:
+    """Run one toolchain task; return a compact gap line if it failed (ADR-015)."""
+    tc = resolve_toolchain(Sandbox(target))
+    res = tc.run(Sandbox(target), task)
+    if res.skipped or res.exit_code == 0:
         return None
-    probe = _run([str(py), "-c", f"import {module}"], cwd=target, timeout=30)
-    if probe.returncode != 0:
-        return f"{module}: not installed in the target .venv — cannot run the mandated check"
-    res = _run([str(py), "-m", module, *args], cwd=target)
-    if res.returncode != 0:
-        tail = (res.stdout + res.stderr).strip().splitlines()[-4:]
-        return f"{module} FAILED: " + " / ".join(tail)
-    return None
+    detail = head_tail_truncate(sanitize(res.stdout + "\n" + res.stderr), head=2, tail=6, limit=800).strip()
+    return f"{task} FAILED ({tc.stack}): {detail}"
 
 
 def run_checks(target: Path, hermetic: bool = True) -> list[str]:
+    """Mechanical gate. Python default: hermetic build/test + toolchain lint (mypy+ruff).
+    A toolchain.json project runs install -> test -> lint through the abstraction (ADR-015)."""
+    tc = resolve_toolchain(Sandbox(target))
     gaps: list[str] = []
-    if hermetic:
-        g = hermetic_build_and_test(target)
+    if getattr(tc, "stack", "") == "python-default":
+        if hermetic:
+            g = hermetic_build_and_test(target)
+            if g:
+                gaps.append(g)
+        g = _toolchain_gap(target, "lint")   # ADR-015: mypy + ruff via the abstraction
         if g:
             gaps.append(g)
-    for g in (venv_tool(target, "mypy", ["src"]), venv_tool(target, "ruff", ["check", "."])):
-        if g:
-            gaps.append(g)
+    else:
+        for task in ("install", "test", "lint"):
+            g = _toolchain_gap(target, task)
+            if g:
+                gaps.append(g)
     return gaps
 
 
