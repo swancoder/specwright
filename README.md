@@ -9,6 +9,7 @@ with a Git-history-based temporal coupling knowledge graph (SQLite).
 
 ## Quick start
 ```bash
+./bin/init_project.sh --project-dir ../my-app --stack node-typescript --backend claude  # scaffold a new target
 ./bin/bootstrap_env.sh                       # venv + requirements; checks node/opencode/ollama/model
 ./bin/bootstrap_env.sh --target-dir <path>   # also pre-provision <target>/.venv from its requirements.txt
 ./bin/start_mcp.sh --target-dir <path>       # MCP server over stdio (+ SQLite graph)
@@ -32,6 +33,7 @@ pytest tests/
 - [x] Stage 4: MCP stdio server, 7 tools registered, `query_temporal_coupling` wired (ADR-004).
 - [x] Stage 5: all six tools implemented behind `mcp_server/core/sandbox.py` (ADR-001). Follow-ups: OS-level sandbox (container) for `run_tests`; configurable test runner override; `fs_write`/`fs_list` tools if the agent loop needs them.
 - [x] Stage 6: `bin/run_agent.sh` + `bin/harness_config.py`, `config/llm_backends.yaml` (ollama default), `config/roles.yaml` (SystemArchitect) (ADR-005). Follow-ups: pick the real agent CLI (Claude Code needs an Anthropic-protocol proxy in front of Ollama); `AGENT_CMD` override is the placeholder.
+- [x] Stage 17: `bin/init_project.sh` scaffolds a new target project — choose the stack (python|php-js|node-typescript|java-maven|java-gradle → copies the toolchain template) and the agent backend (opencode|claude + model) and directory; writes constitution/CLAUDE.md/specs skeleton/.gitignore + git baseline, prints the run commands (ADR-016).
 - [x] Stage 16: toolchain abstraction (ADR-015) — a target `toolchain.json` (`{stack, commands:{install,lint,test,build}}`) overrides build/test/lint for both the agent and the gate; absent → Python default (venv/pip/mypy/ruff/pytest), unchanged. New capability-gated `run_toolchain_task` MCP tool returns ANSI-stripped, head/tail-truncated (≤4 KiB) JSON; `completion_checks.py` routes lint through it.
 - [x] Stage 15: reliability hardening for weak local models (ADR-014) — model preflight (num_ctx + tool-calling probe, abort 6), dropped-tool-call recovery in the resume, tool-name + argument aliases (gated per role), mechanical completion gate (hermetic build + mypy/ruff before `spec_complete`), no-progress abort (7), shadow-dependency `fs_write` guard.
 - [x] Stage 14: Claude Code backend (`AGENT_CMD=claude`, `--model sonnet` default) runs the identical plan→approve→implement→verify loop via `claude -p --output-format json`; roles applied as `--append-system-prompt` + `--allowedTools mcp__agent-harness__*` with built-ins disallowed (MCP-only); implementer resumed with `--resume <session_id>` (ADR-013). Open Code/generic paths unchanged.
