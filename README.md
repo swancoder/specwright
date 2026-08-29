@@ -1,5 +1,7 @@
 # Agent Harness
 
+[![CI](https://github.com/swancoder/specwright/actions/workflows/ci.yml/badge.svg)](https://github.com/swancoder/specwright/actions/workflows/ci.yml)
+
 Isolated orchestrator + MCP server connecting a local LLM to a separate target codebase,
 with a Git-history-based temporal coupling knowledge graph (SQLite).
 
