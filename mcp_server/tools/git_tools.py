@@ -23,23 +23,15 @@ SPEC_COMPLETE_MARKER: Final[str] = ".agent-harness/spec_complete"
 #: Name of the capability-gated completion tool (registered only with --enable-tool).
 MARK_SPEC_COMPLETE_TOOL: Final[str] = "mark_spec_complete"
 
-#: Paths the agent must never stage in a target repo (internal engineering notes and
-#: harness state), regardless of the target's .gitignore.
-LOCAL_ONLY_PATHSPECS: Final[tuple[str, ...]] = (
-    ":!CLAUDE.md",
-    ":!prompts-hist",
-    ":!prompts-hist/**",
-    ":!.agent-harness",
-    ":!.agent-harness/**",
-    ":!.venv",
-    ":!.venv/**",
-    ":!**/__pycache__",
-    ":!**/__pycache__/**",
-    # local SQLite state (ADR-010)
-    ":!*.db", ":!**/*.db",
-    ":!*.sqlite", ":!**/*.sqlite",
-    ":!*.sqlite3", ":!**/*.sqlite3",
-    ":!*.db3", ":!**/*.db3",
+#: Paths the agent must never commit in a target repo (internal engineering notes, harness
+#: state, virtualenvs, caches, local SQLite). Unstaged after `git add -A` so it works whether or
+#: not the target's .gitignore already excludes them (ADR-001/010; git errors if `git add -- .`
+#: names a gitignored path, so we stage with -A then reset these).
+NEVER_COMMIT_PATHS: Final[tuple[str, ...]] = (
+    "CLAUDE.md", "prompts-hist", ".agent-harness", ".venv", "__pycache__",
+    ":(glob)**/__pycache__/**",
+    "*.db", ":(glob)**/*.db", "*.sqlite", ":(glob)**/*.sqlite",
+    "*.sqlite3", ":(glob)**/*.sqlite3", "*.db3", ":(glob)**/*.db3",
 )
 
 
@@ -108,7 +100,8 @@ def git_commit_feature(sandbox: Sandbox, message: str, spec_id: str) -> str:
         raise ToolError("target directory is not a git repository")
     full_message = build_commit_message(message, spec_id)
 
-    _git(sandbox, "add", "-A", "--", ".", *LOCAL_ONLY_PATHSPECS)
+    _git(sandbox, "add", "-A")   # respects .gitignore (no error on an ignored .agent-harness)
+    sandbox.run(["git", "reset", "-q", "--", *NEVER_COMMIT_PATHS])  # drop never-commit paths (no-op if unstaged)
     if not _git(sandbox, "diff", "--cached", "--name-only").strip():
         return "nothing to commit"
 
