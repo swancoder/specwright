@@ -66,6 +66,12 @@ how a role session is launched and resumed.
   several dollars. The harness logs but does not cap spend.
 - Claude Code's own sandbox being off means MCP-only is load-bearing, not defense-in-depth.
 
+## Fixes (post-hoc)
+- `cc_primary` / `cc_verifier` wrap the `claude` call in `set +e` … `set -e` so a non-zero
+  CLI exit (e.g. a Claude Code postinstall warning) is captured into `rc`/`out` and the supervisor
+  continues, instead of the `out=$(claude …)` assignment aborting the whole run under `set -euo
+  pipefail`. Found during the java-gradle end-to-end validation.
+
 ## Consequences
 - The full plan → approve → implement → verify process runs on Claude Code/Sonnet with one flag
   (`AGENT_CMD=claude`, optional `--model`), enabling an apples-to-apples comparison with the

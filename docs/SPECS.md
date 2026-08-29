@@ -108,5 +108,16 @@ Argument schemas are the Pydantic `*Args` models in each module (strict; unknown
 - `run_agent.sh` `eval`s the helper's `export` lines; config files are trusted input (ADR-005).
 - `OPENCODE_CONFIG` merges over the user's global Open Code config; per-agent tool toggles are honoured by Open Code but cannot stop a model from *describing* edits in text. `gpt-oss:20b` leaks reasoning into visible text via the OpenAI-compatible endpoint (ADR-006).
 
+## 6.1 Multi-stack validation (Stages 15–17)
+The toolchain abstraction (ADR-015) and init script (ADR-016) were validated end-to-end on a
+non-Python, compiled stack: a **Java/Gradle** project scaffolded by `init_project.sh`, driven
+through plan → approve → implement → verify on Claude Haiku, reaching `spec_complete` with the
+completion gate running real `gradle install/test/lint`. Three harness bugs it surfaced were fixed:
+(1) `run_tests` now defers to the toolchain `test` task (ADR-015); (2) `git_commit_feature` stages
+with `add -A` + `reset` so it survives a target that gitignores `.agent-harness` (ADR-010/001);
+(3) `cc_primary`/`cc_verifier` guard the `claude` call with `set +e` so a non-zero CLI exit no longer
+aborts the supervisor (ADR-013). Caveat: the demo used a locally-downloaded Gradle on `PATH`; a real
+repo should commit the `./gradlew` wrapper as the templates assume.
+
 ## 7. Roadmap
 - `pyproject.toml`/`pip install -e .` provisioning; a second/stronger model for the Verifier; `blocked` marker to short-circuit retries on legitimate stops; branch creation (`feat/<NNN>-<slug>`) as a harness step; native Ollama adapter in `opencode.json` to separate gpt-oss reasoning; first end-to-end spec run and transcript review; OS-level sandbox for `run_tests`; rename tracking in the indexer.

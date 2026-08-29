@@ -66,6 +66,13 @@ harness from a specific stack while keeping the existing Python path byte-identi
   `toolchain.json`.
 - Truncation counts lines then caps bytes; a single enormous line is byte-capped but not line-split.
 
+## Fixes (post-hoc)
+- `run_tests` (the implementer's and Verifier's self-test tool) now defers to the toolchain
+  `test` task when a `toolchain.json` is present, instead of its `gradlew`→`npm`→`pytest`
+  auto-detection — so a Verifier correctly assesses a non-Python target. Validated end-to-end on a
+  Java/Gradle project (Haiku): plan → approve → implement → verify, with the completion gate
+  running real `gradle install/test/lint` and `run_tests` reporting `runner: toolchain:java-gradle`.
+
 ## Consequences
 - Dropping a `toolchain.json` into a PHP/JS/Java project overrides install/lint/test/build for both
   the agent (`run_toolchain_task`) and the mechanical gate — no harness code change.

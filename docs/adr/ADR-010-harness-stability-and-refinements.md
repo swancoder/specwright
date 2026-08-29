@@ -74,6 +74,13 @@ We will implement the following refinements across the Harness:
 - The stuck rule is prompt-only; the supervisor loop (ADR-008) will still nudge a stopped
   agent up to `MAX_RETRIES` times. A `blocked` marker remains the roadmap item.
 
+## Fixes (post-hoc)
+- `git_commit_feature` now stages with `git add -A` and then unstages `NEVER_COMMIT_PATHS`
+  (`CLAUDE.md`, `prompts-hist`, `.agent-harness`, `.venv`, `__pycache__`, `*.db*`) via `git reset`,
+  instead of `git add -A -- . :!<pathspec>`. The old form errored (`paths are ignored … use -f`)
+  when the target's `.gitignore` already excluded `.agent-harness` — which `bin/init_project.sh`
+  (ADR-016) correctly adds. Nested paths use `:(glob)` pathspecs. (commit tagged `[ADR-001]`.)
+
 ## Consequences
 - Every path the agent supplies is exact; glob hallucinations fail fast with a clear message.
 - Large files can be read in windows, keeping tool output (and context) small.
