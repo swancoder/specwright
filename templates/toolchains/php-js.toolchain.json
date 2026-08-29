@@ -1,0 +1,9 @@
+{
+  "stack": "php-js",
+  "commands": {
+    "install": "composer install --no-interaction --no-progress --prefer-dist && npm ci --no-progress --no-audit --no-fund",
+    "lint": "vendor/bin/phpstan analyse --no-progress --no-interaction && vendor/bin/php-cs-fixer fix --dry-run --diff --no-interaction && npm run lint --silent",
+    "test": "vendor/bin/phpunit --no-interaction --colors=never && CI=true npm test --silent",
+    "build": "composer dump-autoload --optimize --no-interaction && npm run build --silent"
+  }
+}

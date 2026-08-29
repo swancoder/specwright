@@ -1,0 +1,9 @@
+{
+  "stack": "node-typescript",
+  "commands": {
+    "install": "npm ci --no-progress --no-audit --no-fund",
+    "lint": "npx --no-install tsc --noEmit && npm run lint --silent -- --no-color",
+    "test": "CI=true npm test --silent",
+    "build": "npm run build --silent"
+  }
+}

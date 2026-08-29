@@ -1,0 +1,9 @@
+{
+  "stack": "java-maven",
+  "commands": {
+    "install": "mvn -B -ntp dependency:go-offline",
+    "lint": "mvn -B -ntp checkstyle:check spotbugs:check",
+    "test": "mvn -B -ntp test",
+    "build": "mvn -B -ntp package -DskipTests"
+  }
+}
