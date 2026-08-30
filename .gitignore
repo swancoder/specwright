@@ -7,3 +7,4 @@ __pycache__/
 # local-only engineering notes (ADR-001)
 CLAUDE.md
 prompts-hist/
+.agent-harness/

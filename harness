@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# Specwright — unified developer CLI (ADR-017).
+# One entry point for installing deps, running agent sessions, and the read-only audit UI.
+set -euo pipefail
+
+HARNESS_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV="$HARNESS_DIR/.venv"
+AUDIT_DIR="$HARNESS_DIR/.agent-harness/audit_logs"
+
+# --- colors (skip on a non-tty or when NO_COLOR is set) ------------------------
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_G=$'\033[32m'; C_R=$'\033[31m'; C_Y=$'\033[33m'; C_B=$'\033[1m'; C_0=$'\033[0m'
+else
+  C_G=""; C_R=""; C_Y=""; C_B=""; C_0=""
+fi
+info() { printf '%s%s%s\n'  "$C_Y" "$*" "$C_0" >&2; }
+ok()   { printf '%s✓ %s%s\n' "$C_G" "$*" "$C_0" >&2; }
+err()  { printf '%s✗ %s%s\n' "$C_R" "$*" "$C_0" >&2; }
+
+usage() {
+  cat <<EOF
+${C_B}Specwright${C_0} — unified CLI
+
+Usage: ./harness <command> [args]
+
+Commands:
+  ${C_G}install${C_0} [--no-deps]      Create the venv and install dependencies (incl. streamlit),
+                        verify the MCP server entry points, and prepare
+                        .agent-harness/audit_logs/ (gitignored). --no-deps skips pip.
+
+  ${C_G}run${C_0} "<task>" [args...]   Start an agent session for <task>. A unique SESSION_ID is
+                        generated and exported; remaining args are forwarded verbatim to
+                        bin/run_agent.sh (e.g. --spec <id> --target-dir <path> [--phase plan]).
+                        Output is tee'd to .agent-harness/audit_logs/<SESSION_ID>.log and the
+                        supervisor loop's exit code is preserved.
+
+  ${C_G}ui${C_0} [--port N] [-d]       Launch the read-only Streamlit audit dashboard (Observer).
+                        Reads .agent-harness/audit_logs/ only — never touches agent state, so
+                        sessions can run in parallel. -d / --background detaches it. Port 8501.
+
+  ${C_G}help${C_0}                     Show this help.
+
+Examples:
+  ./harness install
+  ./harness run "add feedback endpoint" --spec 001 --target-dir ../my-app --phase plan
+  ./harness ui --port 8600
+EOF
+}
+
+# --- install -------------------------------------------------------------------
+cmd_install() {
+  local no_deps=0 a
+  for a in "$@"; do [ "$a" = "--no-deps" ] && no_deps=1; done
+  info "Bootstrapping Specwright in $HARNESS_DIR"
+
+  if [ ! -x "$VENV/bin/python" ]; then
+    info "creating virtualenv (.venv)"
+    python3 -m venv "$VENV"
+  else
+    info "reusing existing .venv"
+  fi
+  local py="$VENV/bin/python"
+
+  if [ "$no_deps" -eq 0 ]; then
+    info "installing dependencies (requirements.txt + streamlit)"
+    "$py" -m pip install -q --upgrade pip
+    "$py" -m pip install -q -r "$HARNESS_DIR/requirements.txt" streamlit
+    ok "dependencies installed"
+  else
+    info "--no-deps: skipping pip install"
+  fi
+
+  # verify the MCP server entry points exist
+  local ep missing=0
+  for ep in bin/start_mcp.sh mcp_server/main.py; do
+    if [ -e "$HARNESS_DIR/$ep" ]; then ok "MCP entry point: $ep"; else err "missing MCP entry point: $ep"; missing=1; fi
+  done
+  [ "$missing" -eq 0 ] || { err "install incomplete — MCP entry points missing"; return 1; }
+
+  # audit-log directory, gitignored
+  mkdir -p "$AUDIT_DIR"
+  ok "audit logs: .agent-harness/audit_logs/"
+  local gi="$HARNESS_DIR/.gitignore"
+  if ! grep -qxF ".agent-harness/" "$gi" 2>/dev/null; then
+    printf '.agent-harness/\n' >> "$gi"
+    ok "added .agent-harness/ to .gitignore"
+  fi
+
+  ok "install complete — try: ./harness run \"<task>\" --spec <id> --target-dir <path>"
+}
+
+# --- run -----------------------------------------------------------------------
+cmd_run() {
+  if [ "$#" -lt 1 ] || [ -z "${1:-}" ]; then
+    err "a task description is required"
+    err 'usage: ./harness run "<task>" [--spec <id> --target-dir <path> ...]'
+    return 2
+  fi
+  local task="$1"; shift
+
+  # unique, timestamp-based session id (pid keeps parallel runs distinct)
+  local SESSION_ID; SESSION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  export SESSION_ID HARNESS_SESSION_ID="$SESSION_ID"   # for the logging module / MCP env
+
+  mkdir -p "$AUDIT_DIR"
+  local log="$AUDIT_DIR/$SESSION_ID.log"
+  {
+    echo "session_id: $SESSION_ID"
+    echo "started:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "task:       $task"
+    echo "argv:       $*"
+    echo "----"
+  } > "$log"
+  info "session ${C_B}$SESSION_ID${C_0}  →  ${log#"$HARNESS_DIR"/}"
+
+  # run the supervisor loop; tee to the audit log; preserve its exit code (never swallow).
+  set +e
+  "$HARNESS_DIR/bin/run_agent.sh" "$@" 2>&1 | tee -a "$log"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  echo "exit:       $rc" >> "$log"
+  if [ "$rc" -eq 0 ]; then ok "session $SESSION_ID complete (exit 0)"; else err "session $SESSION_ID exited $rc"; fi
+  return "$rc"
+}
+
+# --- ui ------------------------------------------------------------------------
+cmd_ui() {
+  local port="${HARNESS_UI_PORT:-8501}" bg=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --port) port="${2:-}"; shift 2 ;;
+      --port=*) port="${1#*=}"; shift ;;
+      -d|--background) bg=1; shift ;;
+      *) err "ui: unknown argument '$1'"; return 2 ;;
+    esac
+  done
+  local py="$VENV/bin/python"; [ -x "$py" ] || py="python3"
+  if ! "$py" -c "import streamlit" >/dev/null 2>&1; then
+    err "streamlit is not installed — run './harness install' first"
+    return 1
+  fi
+  mkdir -p "$AUDIT_DIR"
+  local app="$HARNESS_DIR/bin/ui_dashboard.py"
+  info "read-only audit dashboard (Observer) → ${C_B}http://localhost:$port${C_0}"
+  info "watching .agent-harness/audit_logs/ — agent sessions can run in parallel."
+  if [ "$bg" -eq 1 ]; then
+    nohup "$py" -m streamlit run "$app" --server.port "$port" --server.headless true \
+      > "$AUDIT_DIR/.ui.log" 2>&1 &
+    ok "dashboard running in background (pid $!) on port $port"
+  else
+    exec "$py" -m streamlit run "$app" --server.port "$port" --server.headless true
+  fi
+}
+
+# --- dispatch ------------------------------------------------------------------
+cmd="${1:-help}"
+if [ "$#" -gt 0 ]; then shift; fi
+case "$cmd" in
+  install)          cmd_install "$@" ;;
+  run)              cmd_run "$@" ;;
+  ui)               cmd_ui "$@" ;;
+  help|-h|--help)   usage ;;
+  *) err "unknown command: $cmd"; echo >&2; usage; exit 2 ;;
+esac

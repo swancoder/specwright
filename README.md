@@ -74,6 +74,16 @@ from *claiming* the right thing was finished when it wasn't. Neither is lowered 
 | `bin/completion_checks.py` | The mechanical gate: a hermetic build + test + type-check + lint, via the toolchain abstraction. |
 
 ## Quick start
+
+The `./harness` CLI is the front door — install, run a session, watch it:
+```bash
+./harness install                                     # venv + deps (incl. streamlit) + audit dir
+./harness run "add feedback endpoint" --spec 001 --target-dir ../my-app --phase plan
+./harness ui                                          # read-only audit dashboard (Observer)
+```
+Each `run` tags a `SESSION_ID` and tees the transcript to `.agent-harness/audit_logs/<id>.log`;
+`ui` only reads those logs, so sessions keep running in parallel. The underlying `bin/*` scripts
+stay available directly:
 ```bash
 ./bin/init_project.sh --project-dir ../my-app --stack node-typescript --backend claude  # scaffold a new target
 ./bin/bootstrap_env.sh                       # venv + requirements; checks node/opencode/ollama/model
