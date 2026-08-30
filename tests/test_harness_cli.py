@@ -61,6 +61,7 @@ def sandbox_harness(tmp_path):
     (h / "mcp_server").mkdir()
     shutil.copy(HARNESS, h / "harness")
     shutil.copy(ROOT / "bin" / "ui_dashboard.py", h / "bin" / "ui_dashboard.py")
+    shutil.copy(ROOT / "bin" / "audit_log.py", h / "bin" / "audit_log.py")
     (h / "requirements.txt").write_text("")
     (h / "bin" / "start_mcp.sh").write_text("#!/usr/bin/env bash\n")
     (h / "mcp_server" / "main.py").write_text("")
@@ -101,6 +102,15 @@ def test_run_exports_session_id_logs_and_passes_exit_code(sandbox_harness):
     assert "sid=" in body and "UNSET" not in body      # SESSION_ID was exported to the child
     assert "args: --spec 001 --target-dir ../x" in body  # remaining args forwarded verbatim
     assert "exit:       7" in body
+    # structured JSONL companion for the dashboard: session_start + session_end
+    import json
+    jsonl = list((h / ".agent-harness" / "audit_logs").glob("*.jsonl"))
+    assert len(jsonl) == 1
+    events = [json.loads(x) for x in jsonl[0].read_text().splitlines() if x.strip()]
+    actions = [e["action"] for e in events]
+    assert actions == ["session_start", "session_end"]
+    assert events[0]["task"] == "build a widget"
+    assert events[1]["status"] == "failed" and events[1]["exit_code"] == 7
 
 
 def test_run_requires_nonempty_task(sandbox_harness):

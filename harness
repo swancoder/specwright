@@ -113,13 +113,24 @@ cmd_run() {
   } > "$log"
   info "session ${C_B}$SESSION_ID${C_0}  →  ${log#"$HARNESS_DIR"/}"
 
+  # structured JSONL events for the Observer dashboard (best-effort: never break a run).
+  local apy="$VENV/bin/python"; [ -x "$apy" ] || apy="python3"
+  audit() { "$apy" "$HARNESS_DIR/bin/audit_log.py" "$AUDIT_DIR" "$SESSION_ID" "$@" >/dev/null 2>&1 || true; }
+  audit harness session_start "task=$task" "argv=$*"
+
   # run the supervisor loop; tee to the audit log; preserve its exit code (never swallow).
   set +e
   "$HARNESS_DIR/bin/run_agent.sh" "$@" 2>&1 | tee -a "$log"
   local rc=${PIPESTATUS[0]}
   set -e
   echo "exit:       $rc" >> "$log"
-  if [ "$rc" -eq 0 ]; then ok "session $SESSION_ID complete (exit 0)"; else err "session $SESSION_ID exited $rc"; fi
+  if [ "$rc" -eq 0 ]; then
+    audit harness session_end status=success "exit_code=$rc"
+    ok "session $SESSION_ID complete (exit 0)"
+  else
+    audit harness session_end status=failed "exit_code=$rc"
+    err "session $SESSION_ID exited $rc"
+  fi
   return "$rc"
 }
 
