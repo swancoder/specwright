@@ -21,6 +21,7 @@ import venv
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from mcp_server.core.audit import emit_env  # noqa: E402
 from mcp_server.core.sandbox import Sandbox  # noqa: E402
 from mcp_server.core.toolchain import head_tail_truncate, resolve_toolchain, sanitize  # noqa: E402
 
@@ -68,6 +69,9 @@ def _toolchain_gap(target: Path, task: str) -> str | None:
     """Run one toolchain task; return a compact gap line if it failed (ADR-015)."""
     tc = resolve_toolchain(Sandbox(target))
     res = tc.run(Sandbox(target), task)
+    gate_status = "skipped" if res.skipped else ("success" if res.exit_code == 0 else "failed")
+    emit_env("execute_toolchain_task", "gate", task=task, stack=tc.stack,
+             command=res.command, status=gate_status, exit_code=res.exit_code)
     if res.skipped or res.exit_code == 0:
         return None
     detail = head_tail_truncate(sanitize(res.stdout + "\n" + res.stderr), head=2, tail=6, limit=800).strip()
@@ -101,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-hermetic", action="store_true")
     ns = ap.parse_args(argv)
     gaps = run_checks(ns.target_dir.resolve(), hermetic=not ns.no_hermetic)
+    emit_env("mechanical_gate", "gate", status=("success" if not gaps else "failed"),
+             gaps=len(gaps), result=("\n".join(gaps) if gaps else None))
     if not gaps:
         print("completion checks passed", file=sys.stderr)
         return 0

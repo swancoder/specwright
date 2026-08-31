@@ -201,6 +201,15 @@ if [ "$DRY_RUN" -eq 0 ] && [ "$SKIP_PREFLIGHT" -eq 0 ] && [ "$BACKEND_KIND" != "
 fi
 export AGENT_SPEC_ID="$SPEC_ID" AGENT_TARGET_DIR="$TARGET_DIR" AGENT_MCP_CONFIG="$MCP_CONFIG" AGENT_PHASE="$PHASE" AGENT_PLAN_FILE="$PLAN_FILE"
 
+# --- structured audit events for the Observer dashboard (ADR-018) ------------
+# No-op unless `./harness run` exported HARNESS_AUDIT_DIR + HARNESS_SESSION_ID. HARNESS_ACTOR is
+# exported so toolchain events emitted inside the MCP server are attributed to the acting role.
+export HARNESS_ACTOR="$ROLE_NAME"
+audit() {
+  [ -n "${HARNESS_AUDIT_DIR:-}" ] && [ -n "${HARNESS_SESSION_ID:-}" ] || return 0
+  "$PYTHON" "$HARNESS_DIR/bin/audit_log.py" "$HARNESS_AUDIT_DIR" "$HARNESS_SESSION_ID" "$@" >/dev/null 2>&1 || true
+}
+
 IS_OPENCODE=0
 [ "$BACKEND_KIND" = "opencode" ] && IS_OPENCODE=1
 
@@ -262,6 +271,7 @@ if [ "$BACKEND_KIND" = "claude" ]; then
   PREV_KEY="$(progress_key)"
   for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
     rm -f "$RUN_MARKER"
+    audit "$ROLE_NAME" agent_turn "phase=$PHASE" "attempt=$attempt" backend=claude
     if [ "$attempt" -eq 1 ]; then
       echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — starting claude session" >&2
       cc_primary "" "$PROMPT"
@@ -283,7 +293,8 @@ if [ "$BACKEND_KIND" = "claude" ]; then
       continue
     fi
     echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — running Verifier" >&2
-    cc_verifier
+    audit "$VERIFIER_ROLE" agent_turn "phase=verify" "attempt=$attempt" backend=claude
+    HARNESS_ACTOR="$VERIFIER_ROLE" cc_verifier
     if [ -f "$SPEC_MARKER" ]; then
       if run_completion_gate; then
         echo "run_agent.sh: SPEC COMPLETE (Verifier + mechanical checks passed, attempt $attempt)" >&2
@@ -338,6 +349,7 @@ IMPL_SESSION=""
 PREV_KEY="$(progress_key)"
 for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
   rm -f "$RUN_MARKER"
+  audit "$ROLE_NAME" agent_turn "phase=$PHASE" "attempt=$attempt" backend=opencode
   if [ "$attempt" -eq 1 ]; then
     echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — starting session" >&2
     set +e; oc "$PROMPT" 2>&1 | tee "$LAST_IMPL"; rc=${PIPESTATUS[0]}; set -e
@@ -363,7 +375,8 @@ for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
   fi
 
   echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — running Verifier" >&2
-  oc_verify "$VERIFIER_PROMPT" >"$VERIFIER_OUT" 2>&1 || true
+  audit "$VERIFIER_ROLE" agent_turn "phase=verify" "attempt=$attempt" backend=opencode
+  HARNESS_ACTOR="$VERIFIER_ROLE" oc_verify "$VERIFIER_PROMPT" >"$VERIFIER_OUT" 2>&1 || true
   if [ -f "$SPEC_MARKER" ]; then
     if run_completion_gate; then
       echo "run_agent.sh: SPEC COMPLETE (Verifier + mechanical checks passed, attempt $attempt)" >&2

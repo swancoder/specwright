@@ -63,3 +63,28 @@ target provisioning stay lean.
   dependency-free, and this is a low-frequency monitor.
 - **A logging daemon / socket.** Overkill; append-only JSONL files are crash-safe, greppable, and
   need no running service to read after the fact.
+
+## Follow-up: real per-action instrumentation
+
+The initial cut emitted only session-level events. Follow-up wired the three real event sources so the
+timeline reflects an actual run, keeping the logging module as the single dependency direction
+(`bin/` and `mcp_server/tools/` → `mcp_server/core/audit.py`; `bin/audit_log.py` is now a thin CLI shim).
+
+- **`mcp_server/core/audit.py`** — the logic moved here (canonical). `emit_env(action, actor=None, **fields)`
+  reads `HARNESS_AUDIT_DIR` / `HARNESS_SESSION_ID` (and `HARNESS_ACTOR`) from the environment and is a
+  safe no-op when unset, so any code path can be instrumented without a hard dependency on a session.
+- **Env propagation** — `./harness run` exports `HARNESS_AUDIT_DIR` + `HARNESS_SESSION_ID`;
+  `run_agent.sh` additionally exports `HARNESS_ACTOR` (the acting role) so a toolchain event emitted
+  deep inside the MCP server is attributed correctly. Everything flows down the process tree
+  (`harness → run_agent.sh → agent CLI → MCP server → completion gate`).
+- **Sources:**
+  - *Agent turns* — `run_agent.sh` emits `agent_turn` at the top of every implementer attempt and
+    before each Verifier run, in both the Open Code and Claude Code loops (`actor` = role).
+  - *Toolchain executions* — the `run_toolchain_task` MCP tool emits `execute_toolchain_task`
+    (`actor` = `HARNESS_ACTOR`), and the completion gate emits one per lifecycle task (`actor` = `gate`).
+  - *Mechanical gate* — `completion_checks.py` emits a `mechanical_gate` verdict (`status`, `gaps`,
+    and the gap list as `result`).
+
+All emissions are best-effort (`|| true` in bash, swallowed `OSError` in Python): a logging failure
+can never break an agent turn, a toolchain run, or the gate. The dashboard renders `agent_turn`,
+`execute_toolchain_task`, and `mechanical_gate` specially; any future action falls back to a generic row.

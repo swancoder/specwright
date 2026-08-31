@@ -65,6 +65,11 @@ def sandbox_harness(tmp_path):
     (h / "requirements.txt").write_text("")
     (h / "bin" / "start_mcp.sh").write_text("#!/usr/bin/env bash\n")
     (h / "mcp_server" / "main.py").write_text("")
+    # the audit_log.py shim imports mcp_server.core.audit — mirror that minimal package
+    (h / "mcp_server" / "__init__.py").write_text("")
+    core = h / "mcp_server" / "core"; core.mkdir()
+    (core / "__init__.py").write_text("")
+    shutil.copy(ROOT / "mcp_server" / "core" / "audit.py", core / "audit.py")
     fake = h / "bin" / "run_agent.sh"
     fake.write_text('#!/usr/bin/env bash\necho "args: $*"\n'
                     'echo "sid=${SESSION_ID:-UNSET}"\nexit 7\n')

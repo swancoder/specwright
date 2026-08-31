@@ -100,7 +100,7 @@ cmd_run() {
 
   # unique, timestamp-based session id (pid keeps parallel runs distinct)
   local SESSION_ID; SESSION_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  export SESSION_ID HARNESS_SESSION_ID="$SESSION_ID"   # for the logging module / MCP env
+  export SESSION_ID HARNESS_SESSION_ID="$SESSION_ID" HARNESS_AUDIT_DIR="$AUDIT_DIR"   # for the logging module / MCP env
 
   mkdir -p "$AUDIT_DIR"
   local log="$AUDIT_DIR/$SESSION_ID.log"

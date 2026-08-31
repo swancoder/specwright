@@ -127,6 +127,12 @@ def _render_event(st, event: dict) -> None:
         ok = _is_ok(event)
         code = event.get("exit_code", "?")
         (st.success if ok else st.error)(f"⏹️  session end — exit {code} · {ts}")
+    elif "agent_turn" in action_l:
+        phase = event.get("phase", "")
+        attempt = event.get("attempt", "?")
+        backend = event.get("backend", "")
+        st.markdown(f"🧑‍💻 **{actor}** · turn — attempt {attempt} · {phase} · `{backend}`")
+        st.caption(ts)
     else:
         st.markdown(f"**{actor}** · `{action}`")
         st.caption(ts)

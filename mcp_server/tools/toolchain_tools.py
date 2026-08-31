@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Literal
 
 from pydantic import Field
 
+from mcp_server.core.audit import emit_env
 from mcp_server.core.context import HarnessContext
 from mcp_server.core.registry import ToolArgs, ToolSpec
 from mcp_server.core.toolchain import (
@@ -46,6 +48,10 @@ def run_toolchain_task(sandbox, task: str) -> str:
         status = "skipped"
     else:
         status = "success" if result.exit_code == 0 else "failed"
+    # audit event for the Observer dashboard (best-effort; no-op outside a harness session)
+    emit_env("execute_toolchain_task", os.environ.get("HARNESS_ACTOR"),
+             task=task, stack=result.stack, command=result.command,
+             status=status, exit_code=result.exit_code)
     return json.dumps(
         {
             "task": task,
