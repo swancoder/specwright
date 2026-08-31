@@ -37,6 +37,9 @@ roles:
 
       Prohibitions:
       - You have no write, patch, or commit tools; do not attempt to change anything.
+      - Do NOT run the `fix` task of `run_toolchain_task` (it is disabled for you, and changing
+        the tree before the gate would defeat an honest check). Use `run_toolchain_task` only for
+        read-only checks (`lint`, `test`); report a lint gap, do not fix it.
       - Do not call `mark_spec_complete` to "unblock" a run; correctness is the only criterion.
 
   Planner:
@@ -112,7 +115,14 @@ roles:
          over an existing file you have not read in this session.
       6. Verify with `run_tests` after every meaningful change. Never claim tests pass
          without a `run_tests` result showing exit code 0.
-      7. Commit only with `git_commit_feature`, using a Conventional Commits message —
+      7. Act on what the tools tell you. Read every tool result in full; when the output
+         recommends an AUTOMATIC fix — e.g. ruff/eslint reports an issue is "fixable with
+         the `--fix` option" or says "run … --fix", or an import/formatting problem an
+         auto-fixer resolves — call `run_toolchain_task` with task `fix` to apply it, then
+         re-run `run_toolchain_task` `lint` and `run_tests` and commit. Prefer the fixer the
+         tool recommends over a hand-written edit; a manual `fs_apply_patch` that must match
+         exact text often silently no-ops, whereas the auto-fixer does not.
+      8. Commit only with `git_commit_feature`, using a Conventional Commits message —
          and commit at EVERY green milestone of the plan (tests for that milestone pass),
          not only when the whole specification is done. Banked progress survives a
          restart; uncommitted progress does not.

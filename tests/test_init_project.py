@@ -43,7 +43,10 @@ def test_non_python_stack_copies_toolchain(tmp_path: Path, stack: str) -> None:
     res = _init(d, "--stack", stack, "--backend", "claude", "--model", "haiku")
     assert res.returncode == 0, res.stderr
     tc = json.loads((d / "toolchain.json").read_text())
-    assert tc["stack"] == stack and set(tc["commands"]) == {"install", "lint", "test", "build"}
+    cmds = set(tc["commands"])
+    assert tc["stack"] == stack
+    assert cmds >= {"install", "lint", "test", "build"}          # the four core tasks
+    assert cmds <= {"install", "lint", "test", "build", "fix"}   # plus an optional auto-fixer (ADR-019)
     assert "toolchain.json" in _tracked(d)
     assert "AGENT_CMD=claude" in res.stderr and "--model haiku" in res.stderr
 

@@ -22,7 +22,10 @@ from typing import Final
 from mcp_server.core.sandbox import CommandResult, Sandbox
 
 TOOLCHAIN_FILE: Final[str] = "toolchain.json"
-TASKS: Final[tuple[str, ...]] = ("install", "lint", "test", "build")
+TASKS: Final[tuple[str, ...]] = ("install", "lint", "test", "build", "fix")
+#: Tasks that MODIFY the working tree (auto-fixers). Gated: only the implementer may run them,
+#: never the read-only Verifier — otherwise the completion gate could be silently pre-cleaned.
+MUTATING_TASKS: Final[tuple[str, ...]] = ("fix",)
 DEFAULT_TIMEOUT: Final[float] = 900.0
 
 # ---------------------------------------------------------------- output sanitization (ADR-015 §3)
@@ -134,12 +137,14 @@ class PythonToolchain:
             return [[py, "-m", "pytest", "-q", "tests"]]
         if task == "lint":
             return [[py, "-m", "mypy", "src"], [py, "-m", "ruff", "check", "."]]
+        if task == "fix":
+            return [[py, "-m", "ruff", "check", "--fix", "."]]  # apply ruff's own auto-fixes
         return []  # build: no compile step for the Python default
 
     def command(self, task: str) -> str | None:
         return {"install": "python -m venv .venv && pip install -r requirements.txt",
                 "test": "pytest -q tests", "lint": "mypy src && ruff check .",
-                "build": "(no build step)"}.get(task)
+                "fix": "ruff check --fix .", "build": "(no build step)"}.get(task)
 
     def run(self, sandbox: Sandbox, task: str, timeout: float = DEFAULT_TIMEOUT) -> ToolchainResult:
         display = self.command(task) or ""
@@ -147,7 +152,7 @@ class PythonToolchain:
         if not steps:
             return ToolchainResult(task, self.stack, display, 0, stdout=f"(no '{task}' step for {self.stack})", skipped=True)
         # test/lint need a provisioned .venv; if missing, skip (install provisions it).
-        if task in ("test", "lint") and not self._venv_py(sandbox).exists():
+        if task in ("test", "lint", "fix") and not self._venv_py(sandbox).exists():
             return ToolchainResult(task, self.stack, display, 0, stdout="(skipped: target .venv not provisioned — run the install task)", skipped=True)
         stdout, stderr, code = "", "", 0
         for argv in steps:
