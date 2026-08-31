@@ -69,3 +69,7 @@ These commands are run **non-interactively by an MCP tool**, and the tool trunca
   `--console=plain` suppresses the progress UI, `--no-daemon` keeps it non-persistent,
   `check -x test` runs static verification without the test task).
 - **Maven wrapper** — prefer `./mvnw` over `mvn` when the project ships one, for a pinned Maven version.
+
+## The optional `fix` task (ADR-019)
+
+Alongside `install` / `lint` / `test` / `build`, a stack may declare a **`fix`** command that applies an auto-fixer (`ruff check --fix`, `eslint --fix`, `php-cs-fixer fix`, …). It is a *mutating* task: only the implementer may run it (via `run_toolchain_task` task `fix`), never the read-only Verifier or the completion gate, so the mechanical check stays honest. Omit `fix` for stacks with no safe auto-fixer (the Java templates do).
