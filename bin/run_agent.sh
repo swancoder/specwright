@@ -209,6 +209,7 @@ audit() {
   [ -n "${HARNESS_AUDIT_DIR:-}" ] && [ -n "${HARNESS_SESSION_ID:-}" ] || return 0
   "$PYTHON" "$HARNESS_DIR/bin/audit_log.py" "$HARNESS_AUDIT_DIR" "$HARNESS_SESSION_ID" "$@" >/dev/null 2>&1 || true
 }
+now_ms() { echo $(( $(date +%s%N) / 1000000 )); }   # wall-clock ms for turn durations
 
 IS_OPENCODE=0
 [ "$BACKEND_KIND" = "opencode" ] && IS_OPENCODE=1
@@ -272,6 +273,7 @@ if [ "$BACKEND_KIND" = "claude" ]; then
   for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
     rm -f "$RUN_MARKER"
     audit "$ROLE_NAME" agent_turn "phase=$PHASE" "attempt=$attempt" backend=claude
+    _impl_t0=$(now_ms)
     if [ "$attempt" -eq 1 ]; then
       echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — starting claude session" >&2
       cc_primary "" "$PROMPT"
@@ -287,6 +289,7 @@ if [ "$BACKEND_KIND" = "claude" ]; then
       cc_primary "$IMPL_SESSION" "$RP"
     fi
     echo "run_agent.sh: implementer finished (rc=$rc)" >&2
+    audit "$ROLE_NAME" agent_turn_done "phase=$PHASE" "attempt=$attempt" "duration_ms=$(( $(now_ms) - _impl_t0 ))" "committed=$([ -f "$RUN_MARKER" ] && echo yes || echo no)" "rc=$rc"
     [ -f "$RUN_MARKER" ] && echo "run_agent.sh: implementer committed this iteration" >&2
     if [ "$VERIFY" -eq 0 ]; then
       [ -f "$RUN_MARKER" ] && { echo "run_agent.sh: run successful (marker after attempt $attempt)" >&2; exit 0; }
@@ -294,7 +297,9 @@ if [ "$BACKEND_KIND" = "claude" ]; then
     fi
     echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — running Verifier" >&2
     audit "$VERIFIER_ROLE" agent_turn "phase=verify" "attempt=$attempt" backend=claude
+    _ver_t0=$(now_ms)
     HARNESS_ACTOR="$VERIFIER_ROLE" cc_verifier
+    audit "$VERIFIER_ROLE" agent_turn_done "phase=verify" "attempt=$attempt" "duration_ms=$(( $(now_ms) - _ver_t0 ))"
     if [ -f "$SPEC_MARKER" ]; then
       if run_completion_gate; then
         echo "run_agent.sh: SPEC COMPLETE (Verifier + mechanical checks passed, attempt $attempt)" >&2
@@ -350,6 +355,7 @@ PREV_KEY="$(progress_key)"
 for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
   rm -f "$RUN_MARKER"
   audit "$ROLE_NAME" agent_turn "phase=$PHASE" "attempt=$attempt" backend=opencode
+  _impl_t0=$(now_ms)
   if [ "$attempt" -eq 1 ]; then
     echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — starting session" >&2
     set +e; oc "$PROMPT" 2>&1 | tee "$LAST_IMPL"; rc=${PIPESTATUS[0]}; set -e
@@ -366,6 +372,7 @@ for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
     set +e; oc "${SESS_ARGS[@]}" "$RP" 2>&1 | tee "$LAST_IMPL"; rc=${PIPESTATUS[0]}; set -e
   fi
   echo "run_agent.sh: implementer exited with code $rc" >&2
+  audit "$ROLE_NAME" agent_turn_done "phase=$PHASE" "attempt=$attempt" "duration_ms=$(( $(now_ms) - _impl_t0 ))" "committed=$([ -f "$RUN_MARKER" ] && echo yes || echo no)" "rc=$rc"
   [ -z "$IMPL_SESSION" ] && IMPL_SESSION="$(latest_session)"
   [ -f "$RUN_MARKER" ] && echo "run_agent.sh: implementer committed this iteration" >&2
 
@@ -376,7 +383,9 @@ for (( attempt=1; attempt<=MAX_RETRIES; attempt++ )); do
 
   echo "run_agent.sh: attempt $attempt/$MAX_RETRIES — running Verifier" >&2
   audit "$VERIFIER_ROLE" agent_turn "phase=verify" "attempt=$attempt" backend=opencode
+  _ver_t0=$(now_ms)
   HARNESS_ACTOR="$VERIFIER_ROLE" oc_verify "$VERIFIER_PROMPT" >"$VERIFIER_OUT" 2>&1 || true
+  audit "$VERIFIER_ROLE" agent_turn_done "phase=verify" "attempt=$attempt" "duration_ms=$(( $(now_ms) - _ver_t0 ))"
   if [ -f "$SPEC_MARKER" ]; then
     if run_completion_gate; then
       echo "run_agent.sh: SPEC COMPLETE (Verifier + mechanical checks passed, attempt $attempt)" >&2

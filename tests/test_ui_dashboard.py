@@ -112,3 +112,12 @@ def test_logger_output_is_parseable_by_dashboard_even_with_torn_tail(tmp_path):
         fh.write('{"actor":"harness","action":"session_e')
     events = ui.parse_jsonl(tmp_path / "sid.jsonl")
     assert len(events) == 1 and events[0]["action"] == "session_start"
+
+
+# ---- _dur_suffix: duration rendering helper -------------------------------------
+
+def test_dur_suffix():
+    assert ui._dur_suffix({"duration_ms": 1234}) == " · 1234 ms"
+    assert ui._dur_suffix({"duration_ms": 0}) == " · 0 ms"
+    assert ui._dur_suffix({}) == ""
+    assert ui._dur_suffix({"duration_ms": "nope"}) == ""

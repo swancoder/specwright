@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Literal
 
 from pydantic import Field
@@ -37,7 +38,9 @@ def run_toolchain_task(sandbox, task: str) -> str:
     if task not in TASKS:
         raise ValueError(f"unknown task {task!r}; expected one of {', '.join(TASKS)}")
     tc = resolve_toolchain(sandbox)
+    _t0 = time.monotonic()
     result = tc.run(sandbox, task)
+    duration_ms = int((time.monotonic() - _t0) * 1000)
     combined = result.stdout
     if result.stderr.strip():
         combined = f"{combined}\n[stderr]\n{result.stderr}" if combined.strip() else result.stderr
@@ -51,7 +54,7 @@ def run_toolchain_task(sandbox, task: str) -> str:
     # audit event for the Observer dashboard (best-effort; no-op outside a harness session)
     emit_env("execute_toolchain_task", os.environ.get("HARNESS_ACTOR"),
              task=task, stack=result.stack, command=result.command,
-             status=status, exit_code=result.exit_code)
+             status=status, exit_code=result.exit_code, duration_ms=duration_ms)
     return json.dumps(
         {
             "task": task,

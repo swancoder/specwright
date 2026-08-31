@@ -88,3 +88,12 @@ timeline reflects an actual run, keeping the logging module as the single depend
 All emissions are best-effort (`|| true` in bash, swallowed `OSError` in Python): a logging failure
 can never break an agent turn, a toolchain run, or the gate. The dashboard renders `agent_turn`,
 `execute_toolchain_task`, and `mechanical_gate` specially; any future action falls back to a generic row.
+
+### Event durations
+
+Each event now carries how long its work took. Synchronous sources emit a single event with
+`duration_ms` measured around the call (`time.monotonic`): `execute_toolchain_task` (both the MCP
+tool and each gate task) and the overall `mechanical_gate`. Agent turns span an external subprocess,
+so they are a **pair**: `agent_turn` (start) and `agent_turn_done` (with `duration_ms`, `committed`,
+`rc`), timed in `run_agent.sh` via a `now_ms` wall-clock helper. The dashboard shows `· N ms` on
+toolchain/gate rows and renders `agent_turn_done` as a compact "turn done · N ms · committed=…" line.

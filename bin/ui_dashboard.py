@@ -54,6 +54,12 @@ def list_sessions(audit_dir: Path = AUDIT_DIR) -> list[Path]:
     return sorted(files, key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
 
 
+def _dur_suffix(event: dict) -> str:
+    """`` · 1234 ms`` when the event carries a numeric duration, else empty."""
+    d = event.get("duration_ms")
+    return f" · {d} ms" if isinstance(d, int) else ""
+
+
 def _is_ok(event: dict) -> bool:
     """Best-effort success read from ``status`` / ``exit_code``."""
     status = str(event.get("status", "")).lower()
@@ -112,12 +118,12 @@ def _render_event(st, event: dict) -> None:
         ok = _is_ok(event)
         task = event.get("task", "")
         code = event.get("exit_code", "?")
-        msg = f"🧰 **{actor}** · toolchain `{task}` — {'success' if ok else 'FAILED'} (exit {code}) · {ts}"
+        msg = f"🧰 **{actor}** · toolchain `{task}` — {'success' if ok else 'FAILED'} (exit {code}){_dur_suffix(event)} · {ts}"
         (st.success if ok else st.error)(msg)
     elif "gate" in action_l:  # mechanical_gate
         ok = _is_ok(event)
         status = event.get("status", "?")
-        (st.success if ok else st.error)(f"🔒 **{actor}** · mechanical gate — {status} · {ts}")
+        (st.success if ok else st.error)(f"🔒 **{actor}** · mechanical gate — {status}{_dur_suffix(event)} · {ts}")
     elif action_l in ("session_start", "start"):
         st.subheader(f"▶️  session start · {actor}")
         if event.get("task"):
@@ -127,7 +133,11 @@ def _render_event(st, event: dict) -> None:
         ok = _is_ok(event)
         code = event.get("exit_code", "?")
         (st.success if ok else st.error)(f"⏹️  session end — exit {code} · {ts}")
-    elif "agent_turn" in action_l:
+    elif action_l == "agent_turn_done":
+        committed = event.get("committed")
+        tail = f" · committed={committed}" if committed else ""
+        st.caption(f"↳ {actor} turn done · attempt {event.get('attempt', '?')}{_dur_suffix(event)}{tail} · {ts}")
+    elif action_l == "agent_turn":
         phase = event.get("phase", "")
         attempt = event.get("attempt", "?")
         backend = event.get("backend", "")

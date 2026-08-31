@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import venv
 from pathlib import Path
 
@@ -68,10 +69,13 @@ def hermetic_build_and_test(target: Path) -> str | None:
 def _toolchain_gap(target: Path, task: str) -> str | None:
     """Run one toolchain task; return a compact gap line if it failed (ADR-015)."""
     tc = resolve_toolchain(Sandbox(target))
+    _t0 = time.monotonic()
     res = tc.run(Sandbox(target), task)
+    duration_ms = int((time.monotonic() - _t0) * 1000)
     gate_status = "skipped" if res.skipped else ("success" if res.exit_code == 0 else "failed")
     emit_env("execute_toolchain_task", "gate", task=task, stack=tc.stack,
-             command=res.command, status=gate_status, exit_code=res.exit_code)
+             command=res.command, status=gate_status, exit_code=res.exit_code,
+             duration_ms=duration_ms)
     if res.skipped or res.exit_code == 0:
         return None
     detail = head_tail_truncate(sanitize(res.stdout + "\n" + res.stderr), head=2, tail=6, limit=800).strip()
@@ -104,9 +108,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--target-dir", type=Path, required=True)
     ap.add_argument("--no-hermetic", action="store_true")
     ns = ap.parse_args(argv)
+    _t0 = time.monotonic()
     gaps = run_checks(ns.target_dir.resolve(), hermetic=not ns.no_hermetic)
     emit_env("mechanical_gate", "gate", status=("success" if not gaps else "failed"),
-             gaps=len(gaps), result=("\n".join(gaps) if gaps else None))
+             gaps=len(gaps), duration_ms=int((time.monotonic() - _t0) * 1000),
+             result=("\n".join(gaps) if gaps else None))
     if not gaps:
         print("completion checks passed", file=sys.stderr)
         return 0

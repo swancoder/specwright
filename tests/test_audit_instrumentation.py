@@ -58,6 +58,7 @@ def test_toolchain_tool_emits_execute_event(session_env, tmp_path, monkeypatch):
     assert e["actor"] == "SystemArchitect"
     assert e["task"] == "test" and e["stack"] == "python-default"
     assert "status" in e and "exit_code" in e
+    assert isinstance(e["duration_ms"], int) and e["duration_ms"] >= 0
 
 
 # ---- source C: mechanical gate ------------------------------------------------
@@ -75,6 +76,8 @@ def test_completion_gate_emits_toolchain_and_gate_events(session_env, tmp_path):
     assert "mechanical_gate" in actions
     gate = next(e for e in ev if e["action"] == "mechanical_gate")
     assert gate["actor"] == "gate" and gate["status"] == "success" and gate["gaps"] == 0
-    # the lint toolchain task also emits an execute event, attributed to the gate
+    assert isinstance(gate["duration_ms"], int) and gate["duration_ms"] >= 0
+    # the lint toolchain task also emits an execute event, attributed to the gate, timed
     tool = [e for e in ev if e["action"] == "execute_toolchain_task"]
     assert tool and all(e["actor"] == "gate" for e in tool)
+    assert all(isinstance(e["duration_ms"], int) for e in tool)
